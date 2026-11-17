@@ -2676,16 +2676,20 @@ if menu_selection == "📊 Dashboard":
 
 
 elif menu_selection == "📝 İşlem Ekle/Düzenle":
-    st.title("📝 Gelir / Gider İşlem Yönetimi")
-    
-    # 1. Transaction creation Form
     categories = get_categories()
-    
+    edit_tx_id = st.session_state.get('edit_tx_id')
+    show_tx_form = st.session_state.get('show_new_tx_form', False) or bool(edit_tx_id)
+
+    hdr_c1, hdr_c2 = st.columns([3, 1])
+    hdr_c1.title("📝 İşlemler")
+    if not edit_tx_id:
+        if hdr_c2.button("✖️ Formu Kapat" if show_tx_form else "➕ Yeni İşlem Ekle", type="secondary" if show_tx_form else "primary", use_container_width=True, key="toggle_tx_form_btn"):
+            st.session_state['show_new_tx_form'] = not show_tx_form
+            st.rerun()
+
     if not categories:
         st.warning("⚠️ İşlem eklemeden önce en az bir kategori oluşturmalısınız! Lütfen 'Kategori Yönetimi' sayfasına gidin.")
-    else:
-        # Check if we are in Edit Mode
-        edit_tx_id = st.session_state.get('edit_tx_id')
+    elif show_tx_form:
         edit_tx = None
         if edit_tx_id:
             if is_using_supabase():
@@ -2718,30 +2722,23 @@ elif menu_selection == "📝 İşlem Ekle/Düzenle":
                 conn.close()
                 if row:
                     edit_tx = dict(row)
-                
+
         if edit_tx:
             st.markdown(f"### ✏️ İşlemi Düzenle (ID: #{edit_tx['id']})")
-            
-            # Prefill values
             try:
                 parsed_date = datetime.strptime(edit_tx['date'], '%Y-%m-%d').date()
             except Exception:
                 parsed_date = today_date
-                
-            # Keep type selection outside the form to allow dynamic category list filtering on click
+
             radio_options = ["Gider", "Gelir"]
             default_radio_idx = radio_options.index(edit_tx['type']) if edit_tx['type'] in radio_options else 0
             tx_type = st.radio("İşlem Türü", radio_options, index=default_radio_idx, horizontal=True, key="edit_tx_type")
-            
-            # Filter categories based on transaction type
             filtered_cats = [c for c in categories if c['type'] == tx_type]
-            
+
             with st.form("edit_transaction_form", clear_on_submit=False):
                 col_date, col_time, col_amount = st.columns([3, 4, 3])
-                
                 with col_date:
                     tx_date = st.date_input("Tarih", parsed_date, max_value=today_date, key="edit_tx_date")
-                    
                 with col_time:
                     time_options = {
                         '05:00 - 18:15': '05:00 - 18:15 (Gün İçi - Bugün)',
@@ -2750,17 +2747,10 @@ elif menu_selection == "📝 İşlem Ekle/Düzenle":
                     }
                     opt_keys = list(time_options.keys())
                     default_time_idx = opt_keys.index(edit_tx['time_range']) if edit_tx['time_range'] in opt_keys else 0
-                    tx_time = st.selectbox(
-                        "Saat Aralığı",
-                        options=opt_keys,
-                        format_func=lambda x: time_options[x],
-                        index=default_time_idx,
-                        key="edit_tx_time"
-                    )
-                    
+                    tx_time = st.selectbox("Saat Aralığı", options=opt_keys, format_func=lambda x: time_options[x], index=default_time_idx, key="edit_tx_time")
                 with col_amount:
                     tx_amount_str = st.text_input("Miktar (TL)", value=format_turkish_amount(edit_tx['amount']), key="edit_tx_amount")
-                    
+
                 col_cat, col_desc = st.columns([1, 2])
                 with col_cat:
                     if filtered_cats:
@@ -2770,25 +2760,16 @@ elif menu_selection == "📝 İşlem Ekle/Düzenle":
                             default_cat_idx = cat_ids.index(edit_tx['category_id'])
                         except ValueError:
                             default_cat_idx = 0
-                            
-                        selected_cat_id = st.selectbox(
-                            "Kategori", 
-                            options=cat_ids, 
-                            format_func=lambda x: cat_options[x],
-                            index=default_cat_idx,
-                            key="edit_tx_category"
-                        )
+                        selected_cat_id = st.selectbox("Kategori", options=cat_ids, format_func=lambda x: cat_options[x], index=default_cat_idx, key="edit_tx_category")
                     else:
                         st.error(f"Seçilen türde ({tx_type}) kategori bulunamadı.")
                         selected_cat_id = None
-                        
                 with col_desc:
                     tx_desc = st.text_input("Açıklama / Detay", value=edit_tx['description'] or "", key="edit_tx_desc")
-                    
+
                 submitted = st.form_submit_button("Değişiklikleri Kaydet", type="primary")
-                
-            canceled = st.button("İptal Et / Düzenlemeden Çık", key="cancel_edit_btn")
-                
+            canceled = st.button("İptal Et / Kapat", key="cancel_edit_btn")
+
             if submitted:
                 tx_amount = parse_turkish_amount(tx_amount_str)
                 if tx_amount is None or tx_amount <= 0:
@@ -2799,92 +2780,66 @@ elif menu_selection == "📝 İşlem Ekle/Düzenle":
                     date_str = tx_date.strftime('%Y-%m-%d')
                     update_transaction(edit_tx['id'], date_str, selected_cat_id, tx_amount, tx_desc, tx_time)
                     st.session_state.edit_tx_id = None
-                    st.toast("İşlem başarıyla güncellendi ve tüm bakiye geçmişi yeniden hesaplandı!", icon="✏️")
+                    st.session_state.show_new_tx_form = False
+                    st.toast("İşlem başarıyla güncellendi!", icon="✏️")
                     st.rerun()
-                    
             if canceled:
                 st.session_state.edit_tx_id = None
+                st.session_state.show_new_tx_form = False
                 st.rerun()
-                
         else:
             st.markdown("### ➕ Yeni İşlem Kaydet")
-            
-            # Keep type selection outside the form to allow dynamic category list filtering on click
-            tx_type = st.radio("İşlem Türü", ["Gider", "Gelir"], index=None, horizontal=True)
-            
-            # Filter categories based on transaction type
+            tx_type = st.radio("İşlem Türü", ["Gider", "Gelir"], index=0, horizontal=True)
             filtered_cats = [c for c in categories if c['type'] == tx_type] if tx_type else []
-            
-            with st.form("new_transaction_form", clear_on_submit=False):
+
+            with st.form("new_transaction_form", clear_on_submit=True):
                 col_date, col_time, col_amount = st.columns([3, 4, 3])
-                
                 with col_date:
                     tx_date = st.date_input("Tarih", today_date, max_value=today_date)
-                    
                 with col_time:
                     time_options = {
                         '05:00 - 18:15': '05:00 - 18:15 (Gün İçi - Bugün)',
                         '18:15 - 23:59': '18:15 - 23:59 (Akşam - Yarın)',
                         '00:00 - 05:00': '00:00 - 05:00 (Gece - Bugün)'
                     }
-                    tx_time = st.selectbox(
-                        "Saat Aralığı",
-                        options=list(time_options.keys()),
-                        format_func=lambda x: time_options[x],
-                        index=0,
-                        help="Gecelik faizin işletileceği matrahın hangi günden itibaren hesaplanacağını belirlemek için gereklidir."
-                    )
-                    
+                    tx_time = st.selectbox("Saat Aralığı", options=list(time_options.keys()), format_func=lambda x: time_options[x], index=0)
                 with col_amount:
                     tx_amount_str = st.text_input("Miktar (TL)", value="", key="new_tx_amount")
-                    
+
                 col_cat, col_desc = st.columns([1, 2])
                 with col_cat:
-                    if tx_type is None:
-                        st.info("Kategori listelemek için lütfen işlem türü seçin.")
-                        selected_cat_id = None
-                    elif filtered_cats:
+                    if filtered_cats:
                         cat_options = {c['id']: f"{c['emoji']} {c['name']}" for c in filtered_cats}
-                        selected_cat_id = st.selectbox(
-                            "Kategori", 
-                            options=list(cat_options.keys()), 
-                            format_func=lambda x: cat_options[x]
-                        )
+                        selected_cat_id = st.selectbox("Kategori", options=list(cat_options.keys()), format_func=lambda x: cat_options[x])
                     else:
                         st.error(f"Seçilen türde ({tx_type}) kategori bulunamadı.")
                         selected_cat_id = None
-                        
                 with col_desc:
                     tx_desc = st.text_input("Açıklama / Detay")
-                    
-                submitted = st.form_submit_button("İşlemi Kaydet", type="primary")
-                
+
+                submitted = st.form_submit_button("✅ İşlemi Kaydet", type="primary")
+
             if submitted:
                 tx_amount = parse_turkish_amount(tx_amount_str)
                 if tx_amount is None or tx_amount <= 0:
                     st.error("Lütfen geçerli bir miktar girin (Örn: 1.000,50)")
-                elif tx_type is None:
-                    st.error("İşlem türü seçimi zorunludur.")
                 elif selected_cat_id is None:
                     st.error("Kategori seçimi zorunludur.")
                 else:
                     date_str = tx_date.strftime('%Y-%m-%d')
                     add_transaction(date_str, selected_cat_id, tx_amount, tx_desc, time_range=tx_time)
-                    st.success("İşlem başarıyla eklendi! Zaman serisi ve bileşik faizler yeniden hesaplandı.")
+                    st.session_state.show_new_tx_form = False
+                    st.toast("İşlem başarıyla eklendi!", icon="✅")
                     st.rerun()
+        st.markdown("---")
 
-    # 2. Complete Transaction List
-    st.markdown("---")
-    st.markdown("### 📋 İşlem Geçmişi")
-    
+    # Transaction List (Always front and center)
     all_txs = get_transactions()
     if not all_txs:
-        st.info("İşlem geçmişiniz henüz boş.")
+        st.info("İşlem geçmişiniz henüz boş. Sağ üstteki **➕ Yeni İşlem Ekle** butonuna basarak ilk işleminizi ekleyebilirsiniz.")
     else:
-        # Search & Filter
-        search_query = st.text_input("🔍 Açıklama veya kategori ara...", "").lower()
-        
-        # Deletion confirmation
+        search_query = st.text_input("🔍 Açıklama, kategori veya tarih ara...", "").lower()
+
         if st.session_state.get('confirm_delete_id'):
             del_id = st.session_state.confirm_delete_id
             del_tx = next((t for t in all_txs if t['id'] == del_id), None)
@@ -2897,7 +2852,7 @@ elif menu_selection == "📝 İşlem Ekle/Düzenle":
                         if st.session_state.get('edit_tx_id') == del_id:
                             st.session_state.edit_tx_id = None
                         st.session_state.confirm_delete_id = None
-                        st.toast("İşlem silindi, bakiye yeniden hesaplandı.", icon="🗑️")
+                        st.toast("İşlem silindi.", icon="🗑️")
                         st.rerun()
                 with col_no:
                     if st.button("İptal Et", key="btn_confirm_del_no"):
@@ -2905,42 +2860,26 @@ elif menu_selection == "📝 İşlem Ekle/Düzenle":
                         st.rerun()
             else:
                 st.session_state.confirm_delete_id = None
-        
-        filtered_txs = []
-        for tx in all_txs:
-            matches_search = (
-                search_query in (tx['description'] or '').lower() or 
-                search_query in tx['category_name'].lower() or
-                search_query in tx['date']
-            )
-            if matches_search:
-                filtered_txs.append(tx)
-                
+
+        filtered_txs = [
+            tx for tx in all_txs
+            if search_query in (tx['description'] or '').lower()
+            or search_query in (tx['category_name'] or '').lower()
+            or search_query in tx['date']
+        ]
+
         if not filtered_txs:
             st.info("Aramanıza uygun işlem bulunamadı.")
         else:
-            # Custom styled list with Delete and Edit Actions (Accordion details card styling)
             for tx in filtered_txs:
                 sign = "+" if tx['type'] == 'Gelir' else "-"
                 raw_desc = tx['description'] if tx['description'] else tx['category_name']
-                clean_desc = raw_desc.replace("~", "")
-                
+                clean_desc = (raw_desc or "").replace("~", "")
                 desc_len = len(clean_desc)
-                if desc_len <= 12:
-                    desc_font_size = "0.88rem"
-                elif desc_len <= 18:
-                    desc_font_size = "0.80rem"
-                elif desc_len <= 26:
-                    desc_font_size = "0.74rem"
-                elif desc_len <= 35:
-                    desc_font_size = "0.68rem"
-                else:
-                    desc_font_size = "0.60rem"
-                
+                desc_font_size = "0.88rem" if desc_len <= 12 else ("0.80rem" if desc_len <= 18 else ("0.74rem" if desc_len <= 26 else ("0.68rem" if desc_len <= 35 else "0.60rem")))
                 amt_color = "#10B981" if tx['type'] == 'Gelir' else "#EF4444"
                 amt_formatted = f"{sign} {tx['amount']:,.2f} TL"
-                
-                # Dynamic style block to absolute-position the amount (strong) and date (code) inside expander header
+
                 st.markdown(f"""
                 <style>
                 div[data-testid="stExpander"]:has(#tx-id-{tx['id']}) > details > summary {{
@@ -2992,235 +2931,184 @@ elif menu_selection == "📝 İşlem Ekle/Düzenle":
                 }}
                 </style>
                 """, unsafe_allow_html=True)
-                
-                if tx['category_name']:
-                    cat_prefix = f"_{tx['emoji']} {tx['category_name']}_ · "
-                else:
-                    cat_prefix = ""
-                    
+
+                cat_prefix = f"_{tx['emoji']} {tx['category_name']}_ · " if tx['category_name'] else ""
                 exp_title = f"{cat_prefix}~~{clean_desc}~~ **{amt_formatted}** `{tx['date']}`"
                 with st.expander(exp_title, expanded=False):
                     st.markdown(f'<div id="tx-id-{tx["id"]}"></div>', unsafe_allow_html=True)
                     tx_type_lbl = "🟢 Gelir" if tx['type'] == 'Gelir' else "🔴 Gider"
                     time_lbl = f" | 🕒 Saat: {tx['time_range']}" if tx.get('time_range') else " | 🕒 Saat: Belirsiz"
-                    
-                    st.markdown(
-                        f"<div style='font-size: 0.82rem; color: #64748B; margin-bottom: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;'>"
-                        f"  <span>{tx_type_lbl}{time_lbl}</span>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
+                    st.markdown(f"<div style='font-size: 0.82rem; color: #64748B; margin-bottom: 10px;'><span>{tx_type_lbl}{time_lbl}</span></div>", unsafe_allow_html=True)
                     c_edit, c_del = st.columns(2)
                     with c_edit:
-                        if st.button("✏️ Düzenle", key=f"edit_tx_btn_{tx['id']}", help="İşlemi Düzenle", use_container_width=True):
+                        if st.button("✏️ Düzenle", key=f"edit_tx_btn_{tx['id']}", use_container_width=True):
                             st.session_state.edit_tx_id = tx['id']
                             st.rerun()
                     with c_del:
-                        if st.button("🗑️ Sil", key=f"del_tx_btn_{tx['id']}", help="İşlemi Sil", use_container_width=True):
+                        if st.button("🗑️ Sil", key=f"del_tx_btn_{tx['id']}", use_container_width=True):
                             st.session_state.confirm_delete_id = tx['id']
                             st.rerun()
 
 
 elif menu_selection == "🏷️ Kategori Yönetimi":
-    st.title("🏷️ Kategori Yönetimi (Spendee)")
-    
-    col_add, col_list = st.columns([1, 1])
-    
-    # Check if category is being edited
+    cats = get_categories()
     edit_cat_id = st.session_state.get('edit_cat_id')
-    edit_cat = None
-    if edit_cat_id:
-        if is_using_supabase():
-            client = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
-            data = client._get("ory_categories", params={"id": f"eq.{edit_cat_id}"})
-            if data:
-                edit_cat = data[0]
-        else:
-            conn = get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, name, emoji, color, type FROM categories WHERE id = ?", (edit_cat_id,))
-            row = cursor.fetchone()
-            conn.close()
-            if row:
-                edit_cat = dict(row)
-            
-    with col_add:
+    show_cat_form = st.session_state.get('show_new_cat_form', False) or bool(edit_cat_id)
+
+    hdr_c1, hdr_c2 = st.columns([3, 1])
+    hdr_c1.title(f"🏷️ Kategoriler ({len(cats)})")
+    if not edit_cat_id:
+        if hdr_c2.button("✖️ Formu Kapat" if show_cat_form else "➕ Yeni Kategori Ekle", type="secondary" if show_cat_form else "primary", use_container_width=True, key="toggle_cat_form_btn"):
+            st.session_state['show_new_cat_form'] = not show_cat_form
+            st.rerun()
+
+    if show_cat_form:
+        edit_cat = next((c for c in cats if c['id'] == edit_cat_id), None) if edit_cat_id else None
         st.markdown('<span class="cat-page-marker"></span>', unsafe_allow_html=True)
+        emoji_options = [
+            "🧭", "🏃", "🗺️", "👟", "🏆", "🎓",
+            "🌲", "🏕️", "🪵", "🎒", "🩹", "🏥",
+            "🍕", "🥤", "🍽️", "👕", "🏠", "🚗",
+            "🪙", "💰", "💵", "💳", "🤝", "🛒",
+            "✈️", "🍿", "🎮", "🐾", "🎁", "🛠️"
+        ]
         if edit_cat:
-            st.markdown(f"### ✏️ Kategoriyi Düzenle (ID: #{edit_cat['id']})")
-            
+            st.markdown(f"### ✏️ Kategoriyi Düzenle: {edit_cat['emoji']} {edit_cat['name']}")
             with st.form("edit_category_form", clear_on_submit=False):
                 cat_name = st.text_input("Kategori Adı", value=edit_cat['name'], key="edit_cat_name")
-                cat_type = st.radio("Kategori Türü", ["Gider", "Gelir"], 
-                                     index=0 if edit_cat['type'] == 'Gider' else 1, 
-                                     horizontal=True, key="edit_cat_type")
-                
+                cat_type = st.radio("Kategori Türü", ["Gider", "Gelir"], index=0 if edit_cat['type'] == 'Gider' else 1, horizontal=True, key="edit_cat_type")
                 st.markdown('<span class="cat-color-emoji-marker"></span>', unsafe_allow_html=True)
-                col_color, col_emoji = st.columns([1, 1])
+                col_color, col_emoji = st.columns([1, 2])
                 with col_color:
                     cat_color = st.color_picker("Kategori Rengi", value=edit_cat['color'], key="edit_cat_color_picker")
                 with col_emoji:
                     st.markdown("<div style='margin-bottom: 8px; font-weight: 500; font-size: 0.88rem;'>Kategori Simgesi</div>", unsafe_allow_html=True)
                     st.markdown('<div class="emoji-radio-container">', unsafe_allow_html=True)
-                    emoji_options = [
-                        "🧭", "🏃", "🗺️", "👟", "🏆", "🎓",
-                        "🌲", "🏕️", "🪵", "🎒", "🩹", "🏥",
-                        "🍕", "🥤", "🍽️", "👕", "🏠", "🚗",
-                        "🪙", "💰", "💵", "💳", "🤝", "🛒",
-                        "✈️", "🍿", "🎮", "🐾", "🎁", "🛠️"
-                    ]
-                    try:
-                        default_emoji_idx = emoji_options.index(edit_cat['emoji'])
-                    except ValueError:
-                        default_emoji_idx = 0
-                        
-                    selected_emoji = st.radio(
-                        "Kategori Simgesi Radio",
-                        options=emoji_options,
-                        index=default_emoji_idx,
-                        horizontal=True,
-                        label_visibility="collapsed",
-                        key="edit_cat_emoji_radio"
-                    )
+                    default_emoji_idx = emoji_options.index(edit_cat['emoji']) if edit_cat['emoji'] in emoji_options else 0
+                    selected_emoji = st.radio("Kategori Simgesi Radio", options=emoji_options, index=default_emoji_idx, horizontal=True, label_visibility="collapsed", key="edit_cat_emoji_radio")
                     st.markdown('</div>', unsafe_allow_html=True)
-                    
                 submitted = st.form_submit_button("Değişiklikleri Kaydet", type="primary")
-            
             canceled = st.button("İptal Et", key="cancel_edit_cat_btn")
-            
+
             if submitted:
                 if not cat_name.strip():
                     st.error("Kategori adı boş olamaz!")
                 else:
                     update_category(edit_cat['id'], cat_name.strip(), selected_emoji, cat_color, cat_type)
                     st.session_state.edit_cat_id = None
-                    st.toast("Kategori başarıyla güncellendi ve tüm bakiye geçmişi yeniden hesaplandı!", icon="✏️")
+                    st.session_state.show_new_cat_form = False
+                    st.toast("Kategori güncellendi!", icon="✏️")
                     st.rerun()
             if canceled:
                 st.session_state.edit_cat_id = None
+                st.session_state.show_new_cat_form = False
                 st.rerun()
         else:
             st.markdown("### ➕ Yeni Kategori Oluştur")
-            
-            with st.form("new_category_form", clear_on_submit=False):
+            with st.form("new_category_form", clear_on_submit=True):
                 cat_name = st.text_input("Kategori Adı", placeholder="Örn: Aidat, Ulaşım, Kamp", key="new_cat_name")
-                cat_type = st.radio("Kategori Türü", ["Gider", "Gelir"], index=None, horizontal=True, key="new_cat_type")
-                
+                cat_type = st.radio("Kategori Türü", ["Gider", "Gelir"], index=0, horizontal=True, key="new_cat_type")
                 st.markdown('<span class="cat-color-emoji-marker"></span>', unsafe_allow_html=True)
-                col_color, col_emoji = st.columns([1, 1])
+                col_color, col_emoji = st.columns([1, 2])
                 with col_color:
                     cat_color = st.color_picker("Kategori Rengi", value="#EF4444", key="new_cat_color_picker")
                 with col_emoji:
                     st.markdown("<div style='margin-bottom: 8px; font-weight: 500; font-size: 0.88rem;'>Kategori Simgesi</div>", unsafe_allow_html=True)
                     st.markdown('<div class="emoji-radio-container">', unsafe_allow_html=True)
-                    emoji_options = [
-                        "🧭", "🏃", "🗺️", "👟", "🏆", "🎓",
-                        "🌲", "🏕️", "🪵", "🎒", "🩹", "🏥",
-                        "🍕", "🥤", "🍽️", "👕", "🏠", "🚗",
-                        "🪙", "💰", "💵", "💳", "🤝", "🛒",
-                        "✈️", "🍿", "🎮", "🐾", "🎁", "🛠️"
-                    ]
-                    selected_emoji = st.radio(
-                        "Kategori Simgesi Radio",
-                        options=emoji_options,
-                        index=0,
-                        horizontal=True,
-                        label_visibility="collapsed",
-                        key="new_cat_emoji_radio"
-                    )
+                    selected_emoji = st.radio("Kategori Simgesi Radio", options=emoji_options, index=0, horizontal=True, label_visibility="collapsed", key="new_cat_emoji_radio")
                     st.markdown('</div>', unsafe_allow_html=True)
-                    
-                submitted = st.form_submit_button("Kategoriyi Ekle", type="primary", key="add_cat_btn")
-                
+                submitted = st.form_submit_button("✅ Kategoriyi Ekle", type="primary", key="add_cat_btn")
+
             if submitted:
                 if not cat_name.strip():
                     st.error("Kategori adı boş olamaz!")
-                elif cat_type is None:
-                    st.error("Kategori türü (Gider/Gelir) seçilmesi zorunludur!")
                 else:
                     add_category(cat_name.strip(), selected_emoji, cat_color, cat_type)
-                    st.success(f"'{selected_emoji} {cat_name}' kategorisi başarıyla oluşturuldu!")
+                    st.session_state.show_new_cat_form = False
+                    st.toast(f"'{selected_emoji} {cat_name}' kategorisi oluşturuldu!", icon="✅")
                     st.rerun()
-                    
-    with col_list:
-        st.markdown("### 📋 Mevcut Kategoriler")
-        cats = get_categories()
-        if not cats:
-            st.info("Kayıtlı kategori bulunamadı. Sol taraftaki formu kullanarak yeni kategoriler ekleyebilirsiniz.")
-        else:
-            # Deletion confirmation
-            if st.session_state.get('confirm_delete_cat_id'):
-                del_id = st.session_state.confirm_delete_cat_id
-                del_c = next((c for c in cats if c['id'] == del_id), None)
-                if del_c:
-                    st.warning(f"⚠️ **Seçilen kategoriyi silmek istediğinize emin misiniz?**\n\n**Bu kategori silinirse bağlı TÜM işlemler de silinecektir!**\n\nKategori: **{del_c['emoji']} {del_c['name']}**")
-                    col_yes, col_no = st.columns([1, 1])
-                    with col_yes:
-                        if st.button("Evet, Sil", key="btn_confirm_cat_del_yes", type="primary"):
-                            delete_category(del_id)
-                            if st.session_state.get('edit_cat_id') == del_id:
-                                st.session_state.edit_cat_id = None
-                            st.session_state.confirm_delete_cat_id = None
-                            st.toast("Kategori silindi, faizler ve bakiyeler yeniden hesaplandı.", icon="🗑️")
-                            st.rerun()
-                    with col_no:
-                        if st.button("İptal Et", key="btn_confirm_cat_del_no"):
-                            st.session_state.confirm_delete_cat_id = None
-                            st.rerun()
-                else:
-                    st.session_state.confirm_delete_cat_id = None
+        st.markdown("---")
 
-            for c in cats:
-                lbl_color = "#10B981" if c['type'] == "Gelir" else "#EF4444"
-                type_label = "🟢 Gelir" if c['type'] == 'Gelir' else "🔴 Gider"
-                
-                # Dynamic style block to set left border color for the category expander card
-                st.markdown(f"""
-                <style>
-                div[data-testid="stExpander"]:has(#cat-id-{c['id']}) {{
-                    border-left: 5px solid {c['color']} !important;
-                    background-color: {c['color']}05 !important;
-                }}
-                </style>
-                """, unsafe_allow_html=True)
-                
-                exp_title = f"{c['emoji']} {c['name']} · **{c['type']}**"
-                with st.expander(exp_title, expanded=False):
-                    st.markdown(f'<div id="cat-id-{c["id"]}"></div>', unsafe_allow_html=True)
-                    st.markdown(
-                        f"<div style='font-size: 0.82rem; color: #64748B; margin-bottom: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;'>"
-                        f"  <span>Tür: <span style='color: {lbl_color}; font-weight: 700;'>{c['type']}</span> | Renk Kodu: <code>{c['color']}</code></span>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
-                    
-                    c_edit, c_del = st.columns(2)
-                    with c_edit:
-                        if st.button("✏️ Düzenle", key=f"edit_cat_btn_{c['id']}", use_container_width=True):
-                            st.session_state.edit_cat_id = c['id']
-                            st.rerun()
-                    with c_del:
-                        if st.button("🗑️ Sil", key=f"del_cat_{c['id']}", use_container_width=True):
-                            st.session_state.confirm_delete_cat_id = c['id']
-                            st.rerun()
+    if not cats:
+        st.info("Kayıtlı kategori bulunamadı. Sağ üstteki **➕ Yeni Kategori Ekle** butonuna basarak oluşturabilirsiniz.")
+    else:
+        if st.session_state.get('confirm_delete_cat_id'):
+            del_id = st.session_state.confirm_delete_cat_id
+            del_c = next((c for c in cats if c['id'] == del_id), None)
+            if del_c:
+                st.warning(f"⚠️ **Seçilen kategoriyi silmek istediğinize emin misiniz?**\n\n**Bu kategori silinirse bağlı TÜM işlemler de silinecektir!**\n\nKategori: **{del_c['emoji']} {del_c['name']}**")
+                col_yes, col_no = st.columns([1, 1])
+                with col_yes:
+                    if st.button("Evet, Sil", key="btn_confirm_cat_del_yes", type="primary"):
+                        delete_category(del_id)
+                        if st.session_state.get('edit_cat_id') == del_id:
+                            st.session_state.edit_cat_id = None
+                        st.session_state.confirm_delete_cat_id = None
+                        st.toast("Kategori silindi.", icon="🗑️")
+                        st.rerun()
+                with col_no:
+                    if st.button("İptal Et", key="btn_confirm_cat_del_no"):
+                        st.session_state.confirm_delete_cat_id = None
+                        st.rerun()
+            else:
+                st.session_state.confirm_delete_cat_id = None
+
+        cat_filter = st.radio("Tür Filtresi", ["Tümü", "🟢 Gelir", "🔴 Gider"], horizontal=True, label_visibility="collapsed", key="cat_list_filter")
+        shown_cats = [
+            c for c in cats
+            if cat_filter == "Tümü"
+            or (cat_filter == "🟢 Gelir" and c['type'] == "Gelir")
+            or (cat_filter == "🔴 Gider" and c['type'] == "Gider")
+        ]
+
+        for c in shown_cats:
+            lbl_color = "#10B981" if c['type'] == "Gelir" else "#EF4444"
+            st.markdown(f"""
+            <style>
+            div[data-testid="stExpander"]:has(#cat-id-{c['id']}) {{
+                border-left: 5px solid {c['color']} !important;
+                background-color: {c['color']}05 !important;
+            }}
+            </style>
+            """, unsafe_allow_html=True)
+
+            exp_title = f"{c['emoji']} {c['name']} · **{c['type']}**"
+            with st.expander(exp_title, expanded=False):
+                st.markdown(f'<div id="cat-id-{c["id"]}"></div>', unsafe_allow_html=True)
+                st.markdown(f"<div style='font-size: 0.82rem; color: #64748B; margin-bottom: 10px;'>Tür: <span style='color: {lbl_color}; font-weight: 700;'>{c['type']}</span> | Renk Kodu: <code>{c['color']}</code></div>", unsafe_allow_html=True)
+                c_edit, c_del = st.columns(2)
+                with c_edit:
+                    if st.button("✏️ Düzenle", key=f"edit_cat_btn_{c['id']}", use_container_width=True):
+                        st.session_state.edit_cat_id = c['id']
+                        st.rerun()
+                with c_del:
+                    if st.button("🗑️ Sil", key=f"del_cat_{c['id']}", use_container_width=True):
+                        st.session_state.confirm_delete_cat_id = c['id']
+                        st.rerun()
 
 
 elif menu_selection == "🤝 Borç Takip Sistemi":
-    # Calculate overdue alerts first
     all_debts = get_debts()
     pending_debts = [d for d in all_debts if d['status'] == 'Bekliyor']
-    
+    edit_debt_id = st.session_state.get('edit_debt_id')
+    show_debt_form = st.session_state.get('show_new_debt_form', False) or bool(edit_debt_id)
+
+    hdr_c1, hdr_c2 = st.columns([3, 1])
+    hdr_c1.title("🤝 Borç & Alacak Takibi")
+    if not edit_debt_id:
+        if hdr_c2.button("✖️ Formu Kapat" if show_debt_form else "➕ Yeni Borç/Alacak Ekle", type="secondary" if show_debt_form else "primary", use_container_width=True, key="toggle_debt_form_btn"):
+            st.session_state['show_new_debt_form'] = not show_debt_form
+            st.rerun()
+
     overdue_receivables = []
     overdue_payables = []
     today = today_date
-    
     for d in pending_debts:
         if d['due_date']:
             try:
                 due = datetime.strptime(d['due_date'], '%Y-%m-%d').date()
                 if due <= today:
-                    diff = (today - due).days
-                    d['days_overdue'] = diff
+                    d['days_overdue'] = (today - due).days
                     if d['type'] == 'Alınacak':
                         overdue_receivables.append(d)
                     else:
@@ -3228,26 +3116,20 @@ elif menu_selection == "🤝 Borç Takip Sistemi":
             except Exception:
                 pass
 
-    st.title("🤝 Borç Takip Sistemi (Alınacak & Verilecek)")
-    
-    # Render Overdue Notifications
     if overdue_receivables or overdue_payables:
-        st.markdown("### 🔔 Önemli Vade Bildirimleri")
         for d in overdue_payables:
             diff = d['days_overdue']
             time_str = "bugün!" if diff == 0 else f"{diff} gün gecikti!"
-            st.error(f"🚨 **Ödeme Gecikmesi (Bizim Ödeyeceğimiz):** **{d['name']}** kişisine/kurumuna yapılacak **{d['amount']:,.2f} TL** ödemenin vadesi {time_str}")
+            st.error(f"🚨 **Ödeme Gecikmesi (Bizim Ödeyeceğimiz):** **{d['name']}** — **{d['amount']:,.2f} TL** ({time_str})")
         for d in overdue_receivables:
             diff = d['days_overdue']
             time_str = "bugün!" if diff == 0 else f"{diff} gün gecikti!"
-            st.warning(f"⚠️ **Alacak Gecikmesi (Bize Ödenecek):** **{d['name']}** kişisinden gelecek **{d['amount']:,.2f} TL** alacağın vadesi {time_str}")
-        st.markdown("<br>", unsafe_allow_html=True)
+            st.warning(f"⚠️ **Alacak Gecikmesi (Bize Ödenecek):** **{d['name']}** — **{d['amount']:,.2f} TL** ({time_str})")
 
-    # Calculate Summary
     debt_totals = get_pending_debts_totals()
     total_payable = debt_totals['Verilecek']
     total_receivable = debt_totals['Alınacak']
-    
+
     col_tot1, col_tot2 = st.columns(2)
     with col_tot1:
         st.markdown(f"""
@@ -3258,7 +3140,6 @@ elif menu_selection == "🤝 Borç Takip Sistemi":
             <div class="metric-sub">Dışarıya Gidecek Toplam Tutar</div>
         </div>
         """, unsafe_allow_html=True)
-        
     with col_tot2:
         st.markdown(f"""
         <div class="metric-card" style="text-align: center;">
@@ -3268,46 +3149,17 @@ elif menu_selection == "🤝 Borç Takip Sistemi":
             <div class="metric-sub">Kasamıza Gelecek Toplam Tutar</div>
         </div>
         """, unsafe_allow_html=True)
-        
+
     st.markdown("<br>", unsafe_allow_html=True)
-    
-    col_add, col_list = st.columns([1, 2])
-    
-    # Load categories for debt mapping
     categories = get_categories()
-    
-    # Check if debt is being edited
-    edit_debt_id = st.session_state.get('edit_debt_id')
-    edit_debt = None
-    if edit_debt_id:
-        if is_using_supabase():
-            client = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
-            data = client._get("ory_debts", params={"id": f"eq.{edit_debt_id}"})
-            if data:
-                edit_debt = data[0]
-        else:
-            conn = get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, type, amount, name, due_date, status, category_id FROM debts WHERE id = ?", (edit_debt_id,))
-            row = cursor.fetchone()
-            conn.close()
-            if row:
-                edit_debt = dict(row)
-            
-    with col_add:
+
+    if show_debt_form:
+        edit_debt = next((d for d in all_debts if d['id'] == edit_debt_id), None) if edit_debt_id else None
         if edit_debt:
-            st.markdown(f"### ✏️ Borç Kaydını Düzenle (ID: #{edit_debt['id']})")
-            
-            # Keep type selection outside form
-            debt_type = st.radio("Borç Türü", ["Alınacak", "Verilecek"], 
-                                 index=0 if edit_debt['type'] == 'Alınacak' else 1, 
-                                 horizontal=True, key="edit_debt_type")
-            
-            # Filter categories based on debt type
+            st.markdown(f"### ✏️ Borç Kaydını Düzenle: {edit_debt['name']}")
+            debt_type = st.radio("Borç Türü", ["Alınacak", "Verilecek"], index=0 if edit_debt['type'] == 'Alınacak' else 1, horizontal=True, key="edit_debt_type")
             cat_type_needed = "Gelir" if debt_type == "Alınacak" else "Gider"
             filtered_cats = [c for c in categories if c['type'] == cat_type_needed]
-            
-            # Keep checkbox and date outside form so it dynamically collapses/expands
             has_due_date = st.checkbox("Vade Tarihi Var", value=edit_debt['due_date'] is not None, key="edit_debt_has_due")
             if has_due_date:
                 try:
@@ -3317,37 +3169,24 @@ elif menu_selection == "🤝 Borç Takip Sistemi":
                 debt_due_date = st.date_input("Vade Tarihi", parsed_due, key="edit_debt_due")
             else:
                 debt_due_date = None
-                
+
             with st.form("edit_debt_form", clear_on_submit=False):
                 debt_name = st.text_input("Kişi / Kurum Adı", value=edit_debt['name'], key="edit_debt_name")
                 debt_amount_str = st.text_input("Miktar (TL)", value=format_turkish_amount(edit_debt['amount']), key="edit_debt_amount")
-                
                 if filtered_cats:
                     cat_options = {c['id']: f"{c['emoji']} {c['name']}" for c in filtered_cats}
                     cat_ids = list(cat_options.keys())
-                    try:
-                        default_cat_idx = cat_ids.index(edit_debt['category_id']) if edit_debt['category_id'] in cat_ids else 0
-                    except ValueError:
-                        default_cat_idx = 0
-                    selected_cat_id = st.selectbox(
-                        "Kategori", 
-                        options=cat_ids, 
-                        format_func=lambda x: cat_options[x],
-                        index=default_cat_idx,
-                        key="edit_debt_category"
-                    )
+                    default_cat_idx = cat_ids.index(edit_debt['category_id']) if edit_debt['category_id'] in cat_ids else 0
+                    selected_cat_id = st.selectbox("Kategori", options=cat_ids, format_func=lambda x: cat_options[x], index=default_cat_idx, key="edit_debt_category")
                 else:
-                    st.error(f"Seçilen tür için ({cat_type_needed}) uygun bir kategori bulunamadı. Lütfen önce Kategori Yönetimi sayfasından bir kategori oluşturun.")
+                    st.error(f"Seçilen tür için ({cat_type_needed}) uygun bir kategori bulunamadı.")
                     selected_cat_id = None
-                    
                 status_options = ["Bekliyor", "Ödendi"]
                 default_status_idx = status_options.index(edit_debt['status']) if edit_debt['status'] in status_options else 0
                 debt_status = st.selectbox("Durum", status_options, index=default_status_idx, key="edit_debt_status")
-                
                 submitted = st.form_submit_button("Değişiklikleri Kaydet", type="primary")
-                
             canceled = st.button("İptal Et", key="cancel_edit_debt_btn")
-                
+
             if submitted:
                 debt_amount = parse_turkish_amount(debt_amount_str)
                 if debt_amount is None or debt_amount <= 0:
@@ -3355,62 +3194,48 @@ elif menu_selection == "🤝 Borç Takip Sistemi":
                 elif not debt_name.strip():
                     st.error("Kişi/Kurum adı boş bırakılamaz!")
                 elif selected_cat_id is None:
-                    st.error("Kategori seçimi zorunludur. Lütfen geçerli bir kategori seçin.")
+                    st.error("Kategori seçimi zorunludur.")
                 else:
                     due_date_str = debt_due_date.strftime('%Y-%m-%d') if has_due_date else None
                     update_debt(edit_debt['id'], debt_type, debt_amount, debt_name.strip(), due_date_str, debt_status, selected_cat_id)
                     st.session_state.edit_debt_id = None
-                    st.toast("Borç kaydı başarıyla güncellendi!", icon="✏️")
+                    st.session_state.show_new_debt_form = False
+                    st.toast("Borç kaydı güncellendi!", icon="✏️")
                     st.rerun()
             if canceled:
                 st.session_state.edit_debt_id = None
+                st.session_state.show_new_debt_form = False
                 st.rerun()
         else:
-            st.markdown("### ➕ Yeni Borç Kaydı")
-            debt_type = st.radio("Borç Türü", ["Alınacak", "Verilecek"], horizontal=True, help="Alınacak: Bize gelecek para | Verilecek: Bizim ödeyeceğimiz para", key="new_debt_type")
-            
-            # Filter categories based on debt type:
-            # Alınacak -> Gelir categories
-            # Verilecek -> Gider categories
+            st.markdown("### ➕ Yeni Borç / Alacak Kaydı")
+            debt_type = st.radio("Borç Türü", ["Alınacak", "Verilecek"], horizontal=True, key="new_debt_type")
             cat_type_needed = "Gelir" if debt_type == "Alınacak" else "Gider"
             filtered_cats = [c for c in categories if c['type'] == cat_type_needed]
-            
             has_due_date = st.checkbox("Vade Tarihi Var", key="new_debt_has_due")
-            if has_due_date:
-                debt_due_date = st.date_input("Vade Tarihi", today_date, key="new_debt_due")
-            else:
-                debt_due_date = None
-                
+            debt_due_date = st.date_input("Vade Tarihi", today_date, key="new_debt_due") if has_due_date else None
+
             known_members_list = get_known_members(all_debts)
             selected_quick_member = ""
             if known_members_list:
                 quick_choice = st.selectbox(
-                    "👥 Kayıtlı Sporcu / Kişi Havuzundan Seç (İsteğe Bağlı)",
+                    "👥 Kayıtlı Kişi Havuzundan Seç (İsteğe Bağlı)",
                     options=["➕ Yeni Kişi / Kurum Yaz..."] + known_members_list,
-                    key="quick_member_select_box",
-                    help="Daha önce borç/alacak kaydı olan sporcu veya kurumları tek tıkla seçebilirsiniz."
+                    key="quick_member_select_box"
                 )
                 if quick_choice != "➕ Yeni Kişi / Kurum Yaz...":
                     selected_quick_member = quick_choice
 
-            with st.form("new_debt_form", clear_on_submit=False):
+            with st.form("new_debt_form", clear_on_submit=True):
                 debt_name = st.text_input("Kişi / Kurum Adı", value=selected_quick_member, placeholder="Örn: Ahmet Yılmaz, Spor Genel Md.", key="new_debt_name")
                 debt_amount_str = st.text_input("Miktar (TL)", value="", key="new_debt_amount")
-                
                 if filtered_cats:
                     cat_options = {c['id']: f"{c['emoji']} {c['name']}" for c in filtered_cats}
-                    selected_cat_id = st.selectbox(
-                        "Kategori", 
-                        options=list(cat_options.keys()), 
-                        format_func=lambda x: cat_options[x],
-                        key="new_debt_category"
-                    )
+                    selected_cat_id = st.selectbox("Kategori", options=list(cat_options.keys()), format_func=lambda x: cat_options[x], key="new_debt_category")
                 else:
-                    st.error(f"Seçilen tür için ({cat_type_needed}) uygun bir kategori bulunamadı. Lütfen önce Kategori Yönetimi sayfasından bir kategori oluşturun.")
+                    st.error(f"Seçilen tür için ({cat_type_needed}) uygun bir kategori bulunamadı.")
                     selected_cat_id = None
-                    
-                submitted = st.form_submit_button("Borç Ekle", type="primary")
-                
+                submitted = st.form_submit_button("✅ Borç Kaydını Ekle", type="primary")
+
             if submitted:
                 debt_amount = parse_turkish_amount(debt_amount_str)
                 if debt_amount is None or debt_amount <= 0:
@@ -3418,158 +3243,117 @@ elif menu_selection == "🤝 Borç Takip Sistemi":
                 elif not debt_name.strip():
                     st.error("Kişi/Kurum adı boş bırakılamaz!")
                 elif selected_cat_id is None:
-                    st.error("Kategori seçimi zorunludur. Lütfen geçerli bir kategori seçin.")
+                    st.error("Kategori seçimi zorunludur.")
                 else:
                     due_date_str = debt_due_date.strftime('%Y-%m-%d') if has_due_date else None
                     add_debt(debt_type, debt_amount, debt_name.strip(), due_date_str, "Bekliyor", selected_cat_id)
-                    st.toast("Borç kaydı başarıyla eklendi!", icon="➕")
+                    st.session_state.show_new_debt_form = False
+                    st.toast("Borç kaydı eklendi!", icon="✅")
                     st.rerun()
-                    
-    with col_list:
-        st.markdown("### 📋 Borçlar Listesi")
-        if not all_debts:
-            st.info("Kayıtlı herhangi bir borç bulunamadı.")
-        else:
-            # Deletion confirmation
-            if st.session_state.get('confirm_delete_debt_id'):
-                del_id = st.session_state.confirm_delete_debt_id
-                del_d = next((d for d in all_debts if d['id'] == del_id), None)
-                if del_d:
-                    st.warning(f"⚠️ **Seçilen borç kaydını silmek istediğinize emin misiniz?**\n\n**{del_d['name']} | {del_d['amount']:,.2f} TL | {del_d['type']}**")
-                    col_yes, col_no = st.columns([1, 1])
-                    with col_yes:
-                        if st.button("Evet, Sil", key="btn_confirm_debt_del_yes", type="primary"):
-                            delete_debt(del_id)
-                            if st.session_state.get('edit_debt_id') == del_id:
-                                st.session_state.edit_debt_id = None
-                            st.session_state.confirm_delete_debt_id = None
-                            st.toast("Borç kaydı silindi.", icon="🗑️")
-                            st.rerun()
-                    with col_no:
-                        if st.button("İptal Et", key="btn_confirm_debt_del_no"):
-                            st.session_state.confirm_delete_debt_id = None
-                            st.rerun()
-                else:
-                    st.session_state.confirm_delete_debt_id = None
+        st.markdown("---")
 
-            tab_pending, tab_paid = st.tabs(["⏳ Bekleyen Borçlar", "✅ Ödenmiş Borçlar"])
-            
-            with tab_pending:
-                pending_debts = [d for d in all_debts if d['status'] == 'Bekliyor']
-                if not pending_debts:
-                    st.success("Bekleyen borcunuz bulunmuyor! Her şey dengede.")
-                else:
-                    for d in pending_debts:
-                        color = "#EF4444" if d['type'] == 'Verilecek' else "#10B981"
-                        type_lbl = "🔴 Verilecek" if d['type'] == 'Verilecek' else "🟢 Alınacak"
-                        vade_lbl = f" | 📅 Vade: {d['due_date']}" if d['due_date'] else " | 📅 Vade: Belirsiz"
-                        badge_html = get_debt_badge_html(d['due_date'])
-                        if d['category_name']:
-                            st.markdown(f"""
-                            <style>
-                            div[data-testid="stExpander"]:has(#debt-id-{d['id']}) > details > summary em {{
-                                background-color: {d['category_color']}15 !important;
-                                color: {d['category_color']} !important;
-                                border: 1px solid {d['category_color']}30 !important;
-                                font-style: normal !important;
-                                padding: 2px 8px !important;
-                                border-radius: 8px !important;
-                                font-size: 0.72rem !important;
-                                font-weight: 600 !important;
-                                display: inline-flex !important;
-                                align-items: center !important;
-                                gap: 4px !important;
-                                white-space: nowrap !important;
-                                margin-right: 6px !important;
-                            }}
-                            </style>
-                            """, unsafe_allow_html=True)
-                            cat_prefix = f"_{d['category_emoji']} {d['category_name']}_ · "
-                        else:
-                            cat_prefix = ""
-                            
-                        with st.expander(f"{cat_prefix}{d['name']}  —  {d['amount']:,.2f} TL  {type_lbl.split()[0]}", expanded=False):
-                            st.markdown(f'<div id="debt-id-{d["id"]}"></div>', unsafe_allow_html=True)
-                            # Card detail row inside expander
-                            st.markdown(
-                                f"<div style='font-size: 0.82rem; color: #64748B; margin-bottom: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;'>"
-                                f"  <span>{type_lbl}{vade_lbl}</span>{badge_html}"
-                                f"</div>",
-                                unsafe_allow_html=True
-                            )
-                            # Action buttons side-by-side
-                            c_paid, c_edit, c_del = st.columns(3)
-                            with c_paid:
-                                if st.button("✔️ Ödendi", key=f"pay_debt_{d['id']}", help="Ödendi olarak işaretle", use_container_width=True):
-                                    if not d['category_id']:
-                                        st.toast("⚠️ Ödeme alabilmek için borca önce bir kategori seçmelisiniz! (✏️ Düzenle butonunu kullanın)", icon="⚠️")
-                                    else:
-                                        update_debt_status(d['id'], "Ödendi")
-                                        st.toast("Borç ödendi olarak güncellendi.", icon="✅")
-                                        st.rerun()
-                            with c_edit:
-                                if st.button("✏️ Düzenle", key=f"edit_debt_btn_{d['id']}", help="Borcu Düzenle", use_container_width=True):
-                                    st.session_state.edit_debt_id = d['id']
+    if not all_debts:
+        st.info("Kayıtlı herhangi bir borç bulunamadı. Sağ üstteki **➕ Yeni Borç/Alacak Ekle** butonuna basarak ekleyebilirsiniz.")
+    else:
+        if st.session_state.get('confirm_delete_debt_id'):
+            del_id = st.session_state.confirm_delete_debt_id
+            del_d = next((d for d in all_debts if d['id'] == del_id), None)
+            if del_d:
+                st.warning(f"⚠️ **Seçilen borç kaydını silmek istediğinize emin misiniz?**\n\n**{del_d['name']} | {del_d['amount']:,.2f} TL | {del_d['type']}**")
+                col_yes, col_no = st.columns([1, 1])
+                with col_yes:
+                    if st.button("Evet, Sil", key="btn_confirm_debt_del_yes", type="primary"):
+                        delete_debt(del_id)
+                        if st.session_state.get('edit_debt_id') == del_id:
+                            st.session_state.edit_debt_id = None
+                        st.session_state.confirm_delete_debt_id = None
+                        st.toast("Borç kaydı silindi.", icon="🗑️")
+                        st.rerun()
+                with col_no:
+                    if st.button("İptal Et", key="btn_confirm_debt_del_no"):
+                        st.session_state.confirm_delete_debt_id = None
+                        st.rerun()
+            else:
+                st.session_state.confirm_delete_debt_id = None
+
+        tab_pending, tab_paid = st.tabs(["⏳ Bekleyen Borçlar", "✅ Ödenmiş Borçlar"])
+        with tab_pending:
+            if not pending_debts:
+                st.success("Bekleyen borcunuz bulunmuyor! Her şey dengede.")
+            else:
+                for d in pending_debts:
+                    type_lbl = "🔴 Verilecek" if d['type'] == 'Verilecek' else "🟢 Alınacak"
+                    vade_lbl = f" | 📅 Vade: {d['due_date']}" if d['due_date'] else " | 📅 Vade: Belirsiz"
+                    badge_html = get_debt_badge_html(d['due_date'])
+                    if d['category_name']:
+                        st.markdown(f"""
+                        <style>
+                        div[data-testid="stExpander"]:has(#debt-id-{d['id']}) > details > summary em {{
+                            background-color: {d['category_color']}15 !important;
+                            color: {d['category_color']} !important;
+                            border: 1px solid {d['category_color']}30 !important;
+                            font-style: normal !important;
+                            padding: 2px 8px !important;
+                            border-radius: 8px !important;
+                            font-size: 0.72rem !important;
+                            font-weight: 600 !important;
+                            display: inline-flex !important;
+                            align-items: center !important;
+                            gap: 4px !important;
+                            white-space: nowrap !important;
+                            margin-right: 6px !important;
+                        }}
+                        </style>
+                        """, unsafe_allow_html=True)
+                        cat_prefix = f"_{d['category_emoji']} {d['category_name']}_ · "
+                    else:
+                        cat_prefix = ""
+
+                    with st.expander(f"{cat_prefix}{d['name']}  —  {d['amount']:,.2f} TL  {type_lbl.split()[0]}", expanded=False):
+                        st.markdown(f'<div id="debt-id-{d["id"]}"></div>', unsafe_allow_html=True)
+                        st.markdown(f"<div style='font-size: 0.82rem; color: #64748B; margin-bottom: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;'><span>{type_lbl}{vade_lbl}</span>{badge_html}</div>", unsafe_allow_html=True)
+                        c_paid, c_edit, c_del = st.columns(3)
+                        with c_paid:
+                            if st.button("✔️ Ödendi", key=f"pay_debt_{d['id']}", use_container_width=True):
+                                if not d['category_id']:
+                                    st.toast("⚠️ Önce bir kategori seçmelisiniz! (✏️ Düzenle butonunu kullanın)", icon="⚠️")
+                                else:
+                                    update_debt_status(d['id'], "Ödendi")
+                                    st.toast("Borç ödendi olarak güncellendi.", icon="✅")
                                     st.rerun()
-                            with c_del:
-                                if st.button("🗑️ Sil", key=f"del_debt_{d['id']}", help="Borcu Sil", use_container_width=True):
-                                    st.session_state.confirm_delete_debt_id = d['id']
-                                    st.rerun()
-                                    
-            with tab_paid:
-                paid_debts = [d for d in all_debts if d['status'] == 'Ödendi']
-                if not paid_debts:
-                    st.info("Ödenmiş borç geçmişi bulunmuyor.")
-                else:
-                    for d in paid_debts:
-                        color = "#94A3B8"
-                        type_lbl = "Verilecek" if d['type'] == 'Verilecek' else "Alınacak"
-                        
-                        if d['category_name']:
-                            st.markdown(f"""
-                            <style>
-                            div[data-testid="stExpander"]:has(#debt-id-{d['id']}) > details > summary em {{
-                                background-color: {d['category_color']}15 !important;
-                                color: {d['category_color']} !important;
-                                border: 1px solid {d['category_color']}30 !important;
-                                font-style: normal !important;
-                                padding: 2px 8px !important;
-                                border-radius: 8px !important;
-                                font-size: 0.72rem !important;
-                                font-weight: 600 !important;
-                                display: inline-flex !important;
-                                align-items: center !important;
-                                gap: 4px !important;
-                                white-space: nowrap !important;
-                                margin-right: 6px !important;
-                            }}
-                            </style>
-                            """, unsafe_allow_html=True)
-                            cat_prefix = f"_{d['category_emoji']} {d['category_name']}_ · "
-                        else:
-                            cat_prefix = ""
-                            
-                        with st.expander(f"✅ {cat_prefix}{d['name']}  —  {d['amount']:,.2f} TL  ({type_lbl})", expanded=False):
-                            st.markdown(f'<div id="debt-id-{d["id"]}"></div>', unsafe_allow_html=True)
-                            st.markdown(
-                                f"<div style='font-size: 0.82rem; color: #64748B; margin-bottom: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;'>"
-                                f"  <span>✅ Ödendi ({type_lbl})</span>"
-                                f"</div>",
-                                unsafe_allow_html=True
-                            )
-                            c_unpay, c_edit, c_del = st.columns(3)
-                            with c_unpay:
-                                if st.button("⏪ Geri Al", key=f"unpay_debt_{d['id']}", help="Geri Al (Bekliyor yap)", use_container_width=True):
-                                    update_debt_status(d['id'], "Bekliyor")
-                                    st.toast("Borç tekrar bekliyor statüsüne alındı.", icon="⏪")
-                                    st.rerun()
-                            with c_edit:
-                                if st.button("✏️ Düzenle", key=f"edit_paid_debt_btn_{d['id']}", help="Borcu Düzenle", use_container_width=True):
-                                    st.session_state.edit_debt_id = d['id']
-                            with c_del:
-                                if st.button("🗑️ Sil", key=f"del_paid_debt_{d['id']}", help="Kayıttan Sil", use_container_width=True):
-                                    st.session_state.confirm_delete_debt_id = d['id']
-                                    st.rerun()
+                        with c_edit:
+                            if st.button("✏️ Düzenle", key=f"edit_debt_btn_{d['id']}", use_container_width=True):
+                                st.session_state.edit_debt_id = d['id']
+                                st.rerun()
+                        with c_del:
+                            if st.button("🗑️ Sil", key=f"del_debt_{d['id']}", use_container_width=True):
+                                st.session_state.confirm_delete_debt_id = d['id']
+                                st.rerun()
+
+        with tab_paid:
+            paid_debts = [d for d in all_debts if d['status'] == 'Ödendi']
+            if not paid_debts:
+                st.info("Ödenmiş borç geçmişi bulunmuyor.")
+            else:
+                for d in paid_debts:
+                    type_lbl = "Verilecek" if d['type'] == 'Verilecek' else "Alınacak"
+                    cat_prefix = f"_{d['category_emoji']} {d['category_name']}_ · " if d['category_name'] else ""
+                    with st.expander(f"✅ {cat_prefix}{d['name']}  —  {d['amount']:,.2f} TL  ({type_lbl})", expanded=False):
+                        st.markdown(f'<div id="debt-id-{d["id"]}"></div>', unsafe_allow_html=True)
+                        c_unpay, c_edit, c_del = st.columns(3)
+                        with c_unpay:
+                            if st.button("⏪ Geri Al", key=f"unpay_debt_{d['id']}", use_container_width=True):
+                                update_debt_status(d['id'], "Bekliyor")
+                                st.toast("Borç tekrar bekliyor statüsüne alındı.", icon="⏪")
+                                st.rerun()
+                        with c_edit:
+                            if st.button("✏️ Düzenle", key=f"edit_paid_debt_btn_{d['id']}", use_container_width=True):
+                                st.session_state.edit_debt_id = d['id']
+                                st.rerun()
+                        with c_del:
+                            if st.button("🗑️ Sil", key=f"del_paid_debt_{d['id']}", use_container_width=True):
+                                st.session_state.confirm_delete_debt_id = d['id']
+                                st.rerun()
 
     st.markdown("---")
     render_member_ledger(all_debts)
@@ -3587,64 +3371,54 @@ elif menu_selection == "💳 Ücret & Ödeme Takibi":
 
 elif menu_selection == "⚙️ Faiz & Geçmişi Düzenle":
     st.title("⚙️ Faiz Ayarları ve Simülasyon Detayları")
-    
     tab_faiz, tab_log = st.tabs(["📈 Faiz Oranı Kayıtları", "🔍 Günlük Hesaplama Detayları"])
-    
+
     with tab_faiz:
-        col_new_log, col_log_history = st.columns([1, 1])
-        
-        with col_new_log:
-            st.markdown("### ➕ Yeni Faiz Oranı Değişikliği Ekle")
-            st.info("Bu bölüm geçmiş bir tarihe ait veya yeni bir faiz başlangıcı kaydı eklemenizi sağlar. Sistem tüm geçmişi bu tarihten itibaren yeniden simüle edecektir.")
-            
+        logs = get_rate_logs()
+        show_rate_form = st.session_state.get('show_new_rate_form', False)
+        r_col1, r_col2 = st.columns([3, 1])
+        r_col1.markdown(f"### 📋 Kayıtlı Faiz Oranları ({len(logs)})")
+        if r_col2.button("✖️ Kapat" if show_rate_form else "➕ Yeni Faiz Oranı Ekle", type="secondary" if show_rate_form else "primary", use_container_width=True, key="toggle_rate_form_btn"):
+            st.session_state['show_new_rate_form'] = not show_rate_form
+            st.rerun()
+
+        if show_rate_form:
             with st.form("new_rate_log_form", clear_on_submit=True):
                 log_date = st.date_input("Geçerlilik Başlangıç Tarihi", today_date, max_value=today_date)
                 log_rate = st.selectbox("Yıllık Faiz Oranı", [0.41, 0.45], format_func=lambda x: f"%{int(x*100)}")
-                
-                submitted = st.form_submit_button("Faiz Değişikliğini Kaydet")
-                if submitted:
+                if st.form_submit_button("✅ Faiz Değişikliğini Kaydet", type="primary"):
                     date_str = log_date.strftime('%Y-%m-%d')
                     add_or_update_rate_log(date_str, log_rate)
-                    st.success(f"{date_str} tarihinden itibaren geçerli faiz oranı %{int(log_rate*100)} olarak kaydedildi!")
+                    st.session_state['show_new_rate_form'] = False
+                    st.toast(f"{date_str} itibarıyla faiz oranı %{int(log_rate*100)} kaydedildi!", icon="✅")
                     st.rerun()
-                    
-        with col_log_history:
-            st.markdown("### 📋 Kayıtlı Faiz Oranları Tarihçesi")
-            logs = get_rate_logs()
-            
-            if not logs:
-                st.info("Kayıtlı faiz logu bulunamadı.")
-            else:
-                for l in logs:
-                    col_info, col_action = st.columns([6, 2])
-                    with col_info:
-                        st.markdown(f"""
-                        <div style="padding: 10px; border: 1px solid #E2E8F0; border-radius: 12px; margin-bottom: 8px;">
-                            <strong>Başlangıç Tarihi:</strong> {l['date']} <br>
-                            <strong>Faiz Oranı (Yıllık):</strong> %{int(l['rate']*100)}
-                        </div>
-                        """, unsafe_allow_html=True)
-                    with col_action:
-                        st.write("") # alignment
-                        # Disable deleting the baseline log if it's the only one left
-                        if len(logs) > 1:
-                            if st.button("Sil", key=f"del_rate_{l['id']}", help="Bu faiz kaydını sil. Sistem yeniden simüle edecektir."):
-                                delete_rate_log(l['id'])
-                                st.toast("Faiz kaydı silindi, bakiye yeniden hesaplandı.", icon="🗑️")
-                                st.rerun()
-                        else:
-                            st.button("Sil", key=f"del_rate_{l['id']}", disabled=True, help="Sistemde en az 1 faiz kaydı bulunmalıdır.")
-                            
+            st.markdown("---")
+
+        if not logs:
+            st.info("Kayıtlı faiz logu bulunamadı.")
+        else:
+            for l in logs:
+                col_info, col_action = st.columns([6, 1])
+                with col_info:
+                    st.markdown(f"""
+                    <div style="padding: 10px 14px; border: 1px solid rgba(148,163,184,0.25); border-radius: 12px; margin-bottom: 8px;">
+                        <strong>📅 Başlangıç Tarihi:</strong> {l['date']} &nbsp;|&nbsp;
+                        <strong>📈 Faiz Oranı (Yıllık):</strong> %{int(l['rate']*100)}
+                    </div>
+                    """, unsafe_allow_html=True)
+                with col_action:
+                    if len(logs) > 1:
+                        if st.button("🗑️ Sil", key=f"del_rate_{l['id']}", use_container_width=True):
+                            delete_rate_log(l['id'])
+                            st.toast("Faiz kaydı silindi.", icon="🗑️")
+                            st.rerun()
+
     with tab_log:
         st.markdown("### 🔍 Simülasyon Günlük Detayları (Son 30 Gün)")
-        st.markdown("Aşağıdaki tablo, en eski işlemden bugüne kadar zaman motorunun gün gün nasıl çalıştığını gösterir.")
-        
         if not daily_log:
-            st.info("Henüz simüle edilecek veri bulunmuyor. Lütfen Kategori ve İşlem ekleyin.")
+            st.info("Henüz simüle edilecek veri bulunmuyor.")
         else:
-            df_full = pd.DataFrame(daily_log)
-            # Reorder and rename columns for clarity
-            df_full = df_full.rename(columns={
+            df_full = pd.DataFrame(daily_log).rename(columns={
                 'date': 'Tarih',
                 'vault_before_interest': 'Gün Başı Kasa (TL)',
                 'income': 'Giren Para (TL)',
@@ -3655,13 +3429,8 @@ elif menu_selection == "⚙️ Faiz & Geçmişi Düzenle":
                 'vault_after_interest': 'Gün Sonu Kasa (TL)',
                 'rate': 'Uygulanan Faiz Oranı'
             })
-            
-            # Format rates to percentage
             df_full['Uygulanan Faiz Oranı'] = df_full['Uygulanan Faiz Oranı'].apply(lambda x: f"%{x*100:.1f}" if x > 0 else "%0.0")
-            
-            # Show last 30 days
-            df_last_30 = df_full.tail(30).iloc[::-1] # latest first
-            
+            df_last_30 = df_full.tail(30).iloc[::-1]
             st.dataframe(
                 df_last_30,
                 column_config={

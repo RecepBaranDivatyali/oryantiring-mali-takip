@@ -1,5 +1,6 @@
 """
-Sporcu havuzu + ücret kalemleri + ödeme takibi (Ultra-Hızlı: Session Pool + Cache + Bulk Insert + @st.fragment).
+Sporcu havuzu + ücret kalemleri + ödeme takibi
+Pratik görünüm: Liste her zaman önde, ekleme formları sadece "+ Ekle" butonuna basınca açılır.
 """
 
 import sqlite3
@@ -184,7 +185,6 @@ class FeeStore:
         finally:
             conn.close()
 
-    # ---------- şema (oturum başına sadece 1 kez kontrol eder) ----------
     def ensure(self):
         cache_key = f"fees_schema_ok_{self.sb}"
         if st.session_state.get(cache_key):
@@ -229,7 +229,6 @@ class FeeStore:
         st.session_state[cache_key] = True
         return True, ""
 
-    # ---------- sporcular ----------
     def members(self):
         return sorted(self._select_cached("members"), key=lambda m: (m["name"] or "").casefold())
 
@@ -246,17 +245,16 @@ class FeeStore:
     def delete_members(self, member_ids):
         id_set = set(member_ids)
         all_asg = [a for a in self._select_cached("assignments") if a["member_id"] in id_set]
-        tx_Changed = False
+        tx_changed = False
         for a in all_asg:
             if a.get("transaction_id"):
-                tx_Changed = True
+                tx_changed = True
             self._remove_assignment_and_tx(a)
         for mid in member_ids:
             self._delete("members", mid)
         clear_fees_cache()
-        return tx_Changed
+        return tx_changed
 
-    # ---------- ücret kalemleri ----------
     def fee_items(self):
         return sorted(self._select_cached("fee_items"), key=lambda f: (f["name"] or "").casefold())
 
@@ -283,7 +281,6 @@ class FeeStore:
         self._delete("fee_items", fee_id)
         clear_fees_cache()
 
-    # ---------- atamalar ----------
     def assignments(self, fee_id):
         names = {m["id"]: m["name"] for m in self.members()}
         rows = [dict(r) for r in self._select_cached("assignments") if r["fee_item_id"] == fee_id]
@@ -330,7 +327,6 @@ class FeeStore:
                 pass
         self._delete("assignments", a["id"])
 
-    # ---------- ödeme ----------
     def mark_paid(self, a, fee, member_name, date_str=None):
         date_str = date_str or datetime.now().strftime("%Y-%m-%d")
         tx_id = self._insert(
@@ -367,18 +363,11 @@ class FeeStore:
         )
 
 
-# =====================================================================
-# UI (@st.fragment sayesinde tüm sayfa/sidebar yeniden çalışmaz, anında tepki verir)
-# =====================================================================
 @st.fragment
 def render_fees_page(store, categories, invalidate_cb, today_date):
     ok, err = store.ensure()
     if not ok:
         st.error("Ücret takibi tabloları Supabase'de henüz yok (ya da bağlantı kurulamadı).")
-        st.markdown(
-            "Aşağıdaki SQL'i **Supabase → SQL Editor**'de bir kez çalıştırın, sonra sayfayı yenileyin. "
-            "Mevcut verilerinize dokunmaz."
-        )
         st.code(SUPABASE_SQL, language="sql")
         st.caption(f"Teknik ayrıntı: {err}")
         return
@@ -386,21 +375,21 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
     income_cats = [c for c in categories if c.get("type") == "Gelir"]
     tab_pay, tab_fee, tab_mem = st.tabs(["✅ Ödeme Takibi", "🧾 Ücret Kalemleri", "👥 Sporcu Havuzu"])
 
-    # ------------------------------------------------ Ödeme Takibi
+    # ------------------------------------------------ 1. Ödeme Takibi
     with tab_pay:
         items = store.fee_items()
         if not items:
-            st.info("Önce **Ücret Kalemleri** sekmesinden bir ücret kalemi (örn. Kırmızı tişört – 450 TL) ekleyin.")
+            st.info("Henüz ücret kalemi yok. **🧾 Ücret Kalemleri** sekmesinden ekleyin.")
         else:
             fee = st.selectbox(
-                "Ücret kalemi",
+                "Ücret kalemi seçin",
                 items,
                 format_func=lambda f: f"{f['name']} — {_fmt_tl(f['amount'])}",
                 key="fees_pay_item",
             )
             rows = store.assignments(fee["id"])
             if not rows:
-                st.info("Bu kaleme henüz sporcu atanmamış. **Ücret Kalemleri** sekmesinden atayabilirsiniz.")
+                st.info("Bu kaleme henüz sporcu atanmamış. **🧾 Ücret Kalemleri** sekmesinden atayabilirsiniz.")
             else:
                 paid = [r for r in rows if r["status"] == "Ödendi"]
                 total = sum(float(r["amount"]) for r in rows)
@@ -413,7 +402,7 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
                 st.progress(min(1.0, got / total) if total else 0.0)
 
                 flt = st.radio(
-                    "Göster", ["Hepsi", "Ödemeyenler", "Ödeyenler"], horizontal=True, key="fees_pay_filter"
+                    "Filtre", ["Hepsi", "Ödemeyenler", "Ödeyenler"], horizontal=True, key="fees_pay_filter", label_visibility="collapsed"
                 )
                 shown = [
                     r for r in rows
@@ -435,10 +424,6 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
                         index=[r["id"] for r in shown],
                     )
                     ver = st.session_state.get("fees_pay_ver", 0)
-                    st.caption(
-                        "💡 **Ödedi** kutusunu işaretleyip **Kaydet**'e basın: bugünün tarihiyle gelir işlemi otomatik oluşur. "
-                        "Tarihi değiştirmek için tarih hücresine tıklayın."
-                    )
                     edited = st.data_editor(
                         df,
                         hide_index=True,
@@ -452,7 +437,7 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
                         key=f"fees_editor_{fee['id']}_{flt}_{ver}",
                     )
 
-                    if st.button("💾 Kaydet", type="primary", key="fees_pay_save"):
+                    if st.button("💾 Değişiklikleri Kaydet", type="primary", key="fees_pay_save"):
                         n_paid = n_unpaid = n_date = 0
                         for aid, row in edited.iterrows():
                             a = by_id.get(aid)
@@ -479,128 +464,145 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
                         else:
                             st.info("Değişiklik yok.")
 
-    # ------------------------------------------------ Ücret Kalemleri
+    # ------------------------------------------------ 2. Ücret Kalemleri
     with tab_fee:
         members = store.members()
         mem_map = {m["id"]: m["name"] for m in members}
+        fee_list = store.fee_items()
 
-        st.markdown("#### ➕ Yeni ücret kalemi")
-        if not income_cats:
-            st.warning("Ödemeler kasaya **gelir** olarak işleneceği için önce Kategori Yönetimi'nden bir **Gelir** kategorisi oluşturun.")
-        else:
-            with st.form("fees_new_item", clear_on_submit=True):
-                f1, f2 = st.columns([2, 1])
-                name = f1.text_input("Ad", placeholder="Örn: Kırmızı tişört")
-                amount = f2.number_input("Fiyat (TL)", min_value=0.0, step=50.0, format="%.2f")
-                cat = st.selectbox(
-                    "Gelir kategorisi",
-                    income_cats,
-                    format_func=lambda c: f"{c['emoji']} {c['name']}",
-                )
-                everyone = st.checkbox("Tüm sporculara ata", value=True)
-                chosen = st.multiselect(
-                    "…ya da sadece bu sporculara ata",
-                    list(mem_map.keys()),
-                    format_func=lambda i: mem_map[i],
-                )
-                if st.form_submit_button("Kalemi Ekle", type="primary"):
-                    if not name.strip():
-                        st.error("Ad boş olamaz.")
-                    else:
-                        fid = store.add_fee_item(name, amount, cat["id"])
-                        ids = list(mem_map.keys()) if everyone else chosen
-                        n = store.assign(fid, ids) if ids else 0
-                        st.toast(f"✅ '{name.strip()}' eklendi, {n} sporcuya atandı.")
-                        st.rerun(scope="fragment")
+        h_col1, h_col2 = st.columns([3, 1])
+        h_col1.markdown(f"#### 🧾 Ücret Kalemleri ({len(fee_list)})")
+        show_new_fee = st.session_state.get("show_new_fee_form", False)
+        if h_col2.button("✖️ Kapat" if show_new_fee else "➕ Yeni Kalem Ekle", key="toggle_new_fee_btn", type="secondary" if show_new_fee else "primary", use_container_width=True):
+            st.session_state["show_new_fee_form"] = not show_new_fee
+            st.rerun(scope="fragment")
 
-        st.markdown("#### 🧾 Mevcut kalemler")
-        for f in store.fee_items():
-            asg = store.assignments(f["id"])
-            paid_n = sum(1 for a in asg if a["status"] == "Ödendi")
-            with st.expander(f"{f['name']} — {_fmt_tl(f['amount'])}  ·  {paid_n}/{len(asg)} ödedi"):
-                with st.form(f"fees_edit_{f['id']}"):
-                    e1, e2 = st.columns([2, 1])
-                    n_name = e1.text_input("Ad", value=f["name"])
-                    n_amount = e2.number_input("Fiyat (TL)", min_value=0.0, step=50.0, format="%.2f", value=float(f["amount"]))
-                    cur_idx = next((i for i, c in enumerate(income_cats) if c["id"] == f["category_id"]), 0)
-                    n_cat = st.selectbox(
+        if st.session_state.get("show_new_fee_form", False):
+            if not income_cats:
+                st.warning("Önce Kategori Yönetimi'nden bir **Gelir** kategorisi oluşturun.")
+            else:
+                with st.form("fees_new_item", clear_on_submit=True):
+                    f1, f2 = st.columns([2, 1])
+                    name = f1.text_input("Kalem Adı", placeholder="Örn: Kırmızı tişört")
+                    amount = f2.number_input("Birim Fiyat (TL)", min_value=0.0, step=50.0, format="%.2f")
+                    cat = st.selectbox(
                         "Gelir kategorisi",
                         income_cats,
-                        index=cur_idx,
                         format_func=lambda c: f"{c['emoji']} {c['name']}",
-                    ) if income_cats else None
-                    upd = st.checkbox("Ödenmemiş sporcuların tutarını da güncelle", value=True)
-                    if st.form_submit_button("Kaydet") and n_cat:
-                        store.update_fee_item(f["id"], n_name, n_amount, n_cat["id"], upd)
-                        st.toast("✅ Kalem güncellendi.")
+                    )
+                    everyone = st.checkbox("Tüm sporculara ata", value=True)
+                    chosen = st.multiselect(
+                        "…veya sadece seçilen sporculara ata",
+                        list(mem_map.keys()),
+                        format_func=lambda i: mem_map[i],
+                    )
+                    if st.form_submit_button("✅ Kalemi Oluştur", type="primary"):
+                        if not name.strip():
+                            st.error("Ad boş olamaz.")
+                        else:
+                            fid = store.add_fee_item(name, amount, cat["id"])
+                            ids = list(mem_map.keys()) if everyone else chosen
+                            n = store.assign(fid, ids) if ids else 0
+                            st.session_state["show_new_fee_form"] = False
+                            st.toast(f"✅ '{name.strip()}' eklendi ({n} sporcu).")
+                            st.rerun(scope="fragment")
+
+        if not fee_list:
+            st.info("Henüz kayıtlı bir ücret kalemi yok. Sağ üstteki **➕ Yeni Kalem Ekle** butonuna basarak oluşturabilirsiniz.")
+        else:
+            for f in fee_list:
+                asg = store.assignments(f["id"])
+                paid_n = sum(1 for a in asg if a["status"] == "Ödendi")
+                with st.expander(f"{f['name']} — {_fmt_tl(f['amount'])}  ·  {paid_n}/{len(asg)} ödedi"):
+                    assigned_ids = {a["member_id"] for a in asg}
+                    free = [m for m in members if m["id"] not in assigned_ids]
+                    if free:
+                        add_sel = st.multiselect(
+                            "Sorumlu sporcu ekle", [m["id"] for m in free], format_func=lambda i: mem_map[i], key=f"fees_add_{f['id']}"
+                        )
+                        b1, b2 = st.columns(2)
+                        if b1.button("➕ Seçilenleri ata", key=f"fees_addbtn_{f['id']}", use_container_width=True) and add_sel:
+                            store.assign(f["id"], add_sel)
+                            st.toast("✅ Sporcular atandı.")
+                            st.rerun(scope="fragment")
+                        if b2.button("➕ Kalan herkesi ata", key=f"fees_addall_{f['id']}", use_container_width=True):
+                            store.assign(f["id"], [m["id"] for m in free])
+                            st.toast("✅ Tüm sporcular atandı.")
+                            st.rerun(scope="fragment")
+
+                    if asg:
+                        rm_map = {a["id"]: a["member_name"] + (" (ödedi)" if a["status"] == "Ödendi" else "") for a in asg}
+                        rm_sel = st.multiselect(
+                            "Sorumluluktan çıkar",
+                            list(rm_map.keys()),
+                            format_func=lambda i: rm_map[i],
+                            key=f"fees_rm_{f['id']}",
+                        )
+                        if rm_sel and st.button("➖ Seçilenleri çıkar", key=f"fees_rmbtn_{f['id']}"):
+                            tx_ch = store.remove_assignments(rm_sel)
+                            if tx_ch:
+                                invalidate_cb()
+                            st.toast("✅ Atamalar kaldırıldı.")
+                            st.rerun(scope="fragment")
+
+                    with st.popover("✏️ Kalemi Düzenle / Sil"):
+                        with st.form(f"fees_edit_{f['id']}"):
+                            n_name = st.text_input("Ad", value=f["name"])
+                            n_amount = st.number_input("Fiyat (TL)", min_value=0.0, step=50.0, format="%.2f", value=float(f["amount"]))
+                            cur_idx = next((i for i, c in enumerate(income_cats) if c["id"] == f["category_id"]), 0)
+                            n_cat = st.selectbox(
+                                "Gelir kategorisi",
+                                income_cats,
+                                index=cur_idx,
+                                format_func=lambda c: f"{c['emoji']} {c['name']}",
+                            ) if income_cats else None
+                            upd = st.checkbox("Ödenmemiş sporcuların tutarını da güncelle", value=True)
+                            if st.form_submit_button("Değişiklikleri Kaydet", type="primary") and n_cat:
+                                store.update_fee_item(f["id"], n_name, n_amount, n_cat["id"], upd)
+                                st.toast("✅ Kalem güncellendi.")
+                                st.rerun(scope="fragment")
+                        if st.button("🗑️ Bu Kalemi Tamamen Sil", key=f"fees_delbtn_{f['id']}", use_container_width=True):
+                            store.delete_fee_item(f["id"])
+                            invalidate_cb()
+                            st.toast("🗑️ Kalem silindi.")
+                            st.rerun(scope="fragment")
+
+    # ------------------------------------------------ 3. Sporcu Havuzu
+    with tab_mem:
+        members = store.members()
+        m_col1, m_col2 = st.columns([3, 1])
+        m_col1.markdown(f"#### 👥 Kayıtlı Sporcular ({len(members)})")
+        show_new_mem = st.session_state.get("show_new_mem_form", False)
+        if m_col2.button("✖️ Kapat" if show_new_mem else "➕ Sporcu Ekle", key="toggle_new_mem_btn", type="secondary" if show_new_mem else "primary", use_container_width=True):
+            st.session_state["show_new_mem_form"] = not show_new_mem
+            st.rerun(scope="fragment")
+
+        if st.session_state.get("show_new_mem_form", False):
+            with st.form("fees_new_members", clear_on_submit=True):
+                txt = st.text_area(
+                    "Her satıra bir isim yazın (toplu yapıştırabilirsiniz)",
+                    height=110,
+                    placeholder="Ahmet Yılmaz\nAyşe Demir",
+                )
+                if st.form_submit_button("✅ Sporcuları Kaydet", type="primary"):
+                    n = store.add_members(txt.splitlines())
+                    if n:
+                        st.session_state["show_new_mem_form"] = False
+                        st.toast(f"✅ {n} sporcu eklendi.")
                         st.rerun(scope="fragment")
+                    else:
+                        st.info("Yeni isim bulunamadı (zaten kayıtlı olabilir).")
 
-                assigned_ids = {a["member_id"] for a in asg}
-                free = [m for m in members if m["id"] not in assigned_ids]
-                add_sel = st.multiselect(
-                    "Sporcu ekle", [m["id"] for m in free], format_func=lambda i: mem_map[i], key=f"fees_add_{f['id']}"
-                )
-                b1, b2 = st.columns(2)
-                if b1.button("➕ Seçilenleri ata", key=f"fees_addbtn_{f['id']}") and add_sel:
-                    store.assign(f["id"], add_sel)
-                    st.toast("✅ Sporcular atandı.")
-                    st.rerun(scope="fragment")
-                if b2.button("➕ Kalan herkesi ata", key=f"fees_addall_{f['id']}") and free:
-                    store.assign(f["id"], [m["id"] for m in free])
-                    st.toast("✅ Tüm sporcular atandı.")
-                    st.rerun(scope="fragment")
-
-                rm_map = {a["id"]: a["member_name"] + (" (ödedi)" if a["status"] == "Ödendi" else "") for a in asg}
-                rm_sel = st.multiselect(
-                    "Atamadan çıkar (ödediyse işlemi de silinir)",
-                    list(rm_map.keys()),
-                    format_func=lambda i: rm_map[i],
-                    key=f"fees_rm_{f['id']}",
-                )
-                if st.button("➖ Seçilenleri çıkar", key=f"fees_rmbtn_{f['id']}") and rm_sel:
-                    tx_ch = store.remove_assignments(rm_sel)
+        if members:
+            st.dataframe(pd.DataFrame({"Sporcu Adı": [m["name"] for m in members]}), hide_index=True, use_container_width=True)
+            with st.popover("🗑️ Sporcu Sil"):
+                mem_map = {m["id"]: m["name"] for m in members}
+                del_sel = st.multiselect("Silinecek sporcular", list(mem_map.keys()), format_func=lambda i: mem_map[i])
+                if st.button("Seçilen Sporcuları Sil", type="primary", disabled=not del_sel):
+                    tx_ch = store.delete_members(del_sel)
                     if tx_ch:
                         invalidate_cb()
-                    st.toast("✅ Atamalar kaldırıldı.")
+                    st.toast("🗑️ Seçilen sporcular silindi.")
                     st.rerun(scope="fragment")
-
-                st.markdown("---")
-                sure = st.checkbox("Bu kalemi ve bağlı ödeme işlemlerini sil", key=f"fees_delchk_{f['id']}")
-                if st.button("🗑️ Kalemi Sil", key=f"fees_delbtn_{f['id']}", disabled=not sure):
-                    store.delete_fee_item(f["id"])
-                    invalidate_cb()
-                    st.toast("🗑️ Kalem silindi.")
-                    st.rerun(scope="fragment")
-
-    # ------------------------------------------------ Sporcu Havuzu
-    with tab_mem:
-        st.markdown("#### ➕ Sporcu ekle")
-        with st.form("fees_new_members", clear_on_submit=True):
-            txt = st.text_area(
-                "Her satıra bir isim (toplu eklenebilir)",
-                height=120,
-                placeholder="Ahmet Yılmaz\nAyşe Demir",
-            )
-            if st.form_submit_button("Ekle", type="primary"):
-                n = store.add_members(txt.splitlines())
-                if n:
-                    st.toast(f"✅ {n} sporcu anında eklendi.")
-                    st.rerun(scope="fragment")
-                else:
-                    st.info("Yeni isim bulunamadı (zaten kayıtlı olabilir).")
-
-        members = store.members()
-        st.markdown(f"#### 👥 Kayıtlı sporcular ({len(members)})")
-        if members:
-            st.dataframe(pd.DataFrame({"Sporcu": [m["name"] for m in members]}), hide_index=True, use_container_width=True)
-            mem_map = {m["id"]: m["name"] for m in members}
-            del_sel = st.multiselect("Silinecek sporcular", list(mem_map.keys()), format_func=lambda i: mem_map[i])
-            sure = st.checkbox("Silmeyi onaylıyorum (ödeme kayıtları ve bağlı işlemler de silinir)", key="fees_mem_sure")
-            if st.button("🗑️ Seçilenleri Sil", disabled=not (del_sel and sure)):
-                tx_ch = store.delete_members(del_sel)
-                if tx_ch:
-                    invalidate_cb()
-                st.toast("🗑️ Seçilen sporcular silindi.")
-                st.rerun(scope="fragment")
         else:
-            st.info("Henüz sporcu yok.")
+            st.info("Henüz sporcu yok. Sağ üstteki **➕ Sporcu Ekle** butonuna basarak ekleyebilirsiniz.")
