@@ -59,10 +59,15 @@ def test_supabase_connection():
     except Exception as e:
         return False, 0, f"Bağlantı Hatası: {str(e)}"
 
+@st.cache_resource
+def _get_http_session():
+    return requests.Session()
+
 class SupabaseClient:
     def __init__(self, url, key):
         self.url = url.rstrip('/')
         self.key = key
+        self.session = _get_http_session()
         self.headers = {
             "apikey": key,
             "Authorization": f"Bearer {key}",
@@ -71,22 +76,22 @@ class SupabaseClient:
         }
         
     def _get(self, table, params=None):
-        r = requests.get(f"{self.url}/rest/v1/{table}", headers=self.headers, params=params, timeout=6)
+        r = self.session.get(f"{self.url}/rest/v1/{table}", headers=self.headers, params=params, timeout=6)
         r.raise_for_status()
         return r.json()
         
     def _insert(self, table, data):
-        r = requests.post(f"{self.url}/rest/v1/{table}", headers=self.headers, json=data, timeout=6)
+        r = self.session.post(f"{self.url}/rest/v1/{table}", headers=self.headers, json=data, timeout=6)
         r.raise_for_status()
         return r.json()
         
     def _update(self, table, data, id_val):
-        r = requests.patch(f"{self.url}/rest/v1/{table}?id=eq.{id_val}", headers=self.headers, json=data, timeout=6)
+        r = self.session.patch(f"{self.url}/rest/v1/{table}?id=eq.{id_val}", headers=self.headers, json=data, timeout=6)
         r.raise_for_status()
         return r.json()
         
     def _delete(self, table, id_val):
-        r = requests.delete(f"{self.url}/rest/v1/{table}?id=eq.{id_val}", headers=self.headers, timeout=6)
+        r = self.session.delete(f"{self.url}/rest/v1/{table}?id=eq.{id_val}", headers=self.headers, timeout=6)
         r.raise_for_status()
         return r.json()
 
@@ -99,6 +104,9 @@ def get_connection():
     return conn
 
 def init_db():
+    _init_key = f"db_init_done_{is_using_supabase()}"
+    if st.session_state.get(_init_key):
+        return
     if is_using_supabase():
         client = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
         try:
@@ -181,6 +189,7 @@ def init_db():
             
         conn.commit()
         conn.close()
+    st.session_state[_init_key] = True
 
 # Category CRUD
 def add_category(name, emoji, color, type_val):
@@ -2294,9 +2303,13 @@ if st.sidebar.button("🚪 Çıkış Yap", use_container_width=True):
 
 # --- MAIN PAGE RENDERER ---
 
-# Always run the simulation to get up-to-date data
-book_vault, total_interest_earned, daily_log, accumulated_interest = run_simulation()
-current_vault = book_vault
+# Run simulation only on pages that use it (Dashboard & Faiz) for instant speed on other pages
+if menu_selection in ("📊 Dashboard", "⚙️ Faiz & Geçmişi Düzenle"):
+    book_vault, total_interest_earned, daily_log, accumulated_interest = run_simulation()
+    current_vault = book_vault
+else:
+    book_vault, total_interest_earned, daily_log, accumulated_interest = 0.0, 0.0, [], 0.0
+    current_vault = 0.0
 
 if menu_selection == "📊 Dashboard":
     # Get Debts for Dashboard header

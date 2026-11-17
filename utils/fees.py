@@ -1,15 +1,5 @@
 """
-Sporcu havuzu + ücret kalemleri + ödeme takibi.
-
-Mantık:
-  - Sporcu havuzu: isimler bir kez girilir.
-  - Ücret kalemi: ad + sabit fiyat + gelir kategorisi (örn. "Kırmızı tişört - 450 TL").
-  - Atama: hangi sporcu hangi kalemden sorumlu.
-  - "Ödedi" işaretlenince bugünün tarihiyle otomatik bir GELİR işlemi oluşur
-    (kasaya yansır). Tarih tabloda tıklanıp değiştirilebilir. İşaret kaldırılırsa
-    oluşan işlem geri silinir.
-
-Mevcut hiçbir tabloya dokunmaz; sadece 3 yeni tablo kullanır.
+Sporcu havuzu + ücret kalemleri + ödeme takibi (Ultra-Hızlı: Session Pool + Cache + Bulk Insert + @st.fragment).
 """
 
 import sqlite3
@@ -21,7 +11,6 @@ import streamlit as st
 
 DEFAULT_TIME_RANGE = "05:00 - 18:15"
 
-# logical name -> (supabase table, sqlite table)
 TABLES = {
     "members": ("ory_members", "members"),
     "fee_items": ("ory_fee_items", "fee_items"),
@@ -53,7 +42,6 @@ create table if not exists ory_assignments (
     unique (member_id, fee_item_id)
 );
 
--- Diğer ory_* tablolarınız nasıl erişiliyorsa aynı şekilde erişilebilsin diye:
 alter table ory_members disable row level security;
 alter table ory_fee_items disable row level security;
 alter table ory_assignments disable row level security;
@@ -68,7 +56,6 @@ def _fmt_tl(x):
 
 
 def _to_date_str(v):
-    """None / NaT / str / date / Timestamp -> 'YYYY-MM-DD' ya da None."""
     if v is None:
         return None
     try:
@@ -83,15 +70,36 @@ def _to_date_str(v):
     return None
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def _cached_fee_table(name: str, sb: bool, url: str, key: str, db_path: str):
+    t = TABLES[name][0 if sb else 1]
+    if sb:
+        headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        r = requests.get(f"{url.rstrip('/')}/rest/v1/{t}", headers=headers, params={"select": "*"}, timeout=6)
+        r.raise_for_status()
+        return r.json()
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute(f"SELECT * FROM {t}").fetchall()]
+    finally:
+        conn.close()
+
+
+def clear_fees_cache():
+    _cached_fee_table.clear()
+
+
 class FeeStore:
-    """Hem Supabase hem SQLite için tek arayüz."""
+    """Hem Supabase hem SQLite için önbellekli ve toplu-işlem (bulk) destekli arayüz."""
 
     def __init__(self, use_supabase, client=None, db_path="ekonomi.db"):
         self.sb = bool(use_supabase and client is not None)
         self.c = client
         self.db_path = db_path
+        self.url = client.url if self.sb else ""
+        self.key = client.key if self.sb else ""
 
-    # ---------- düşük seviye ----------
     def _t(self, name):
         return TABLES[name][0 if self.sb else 1]
 
@@ -101,31 +109,14 @@ class FeeStore:
         conn.execute("PRAGMA foreign_keys = ON;")
         return conn
 
-    def _select(self, name, order=None, **where):
-        t = self._t(name)
-        if self.sb:
-            params = {"select": "*"}
-            for k, v in where.items():
-                params[k] = f"eq.{v}"
-            if order:
-                params["order"] = order
-            return self.c._get(t, params=params)
-        sql = f"SELECT * FROM {t}"
-        if where:
-            sql += " WHERE " + " AND ".join(f"{k} = ?" for k in where)
-        if order:
-            col, _, direction = order.partition(".")
-            sql += f" ORDER BY {col} {direction.upper() or 'ASC'}"
-        conn = self._conn()
-        try:
-            return [dict(r) for r in conn.execute(sql, tuple(where.values())).fetchall()]
-        finally:
-            conn.close()
+    def _select_cached(self, name):
+        return [dict(r) for r in _cached_fee_table(name, self.sb, self.url, self.key, self.db_path)]
 
     def _insert(self, name, row):
         t = self._t(name)
         if self.sb:
             res = self.c._insert(t, row)
+            clear_fees_cache()
             return res[0]["id"] if res else None
         cols = list(row.keys())
         conn = self._conn()
@@ -135,7 +126,29 @@ class FeeStore:
                 tuple(row[c] for c in cols),
             )
             conn.commit()
+            clear_fees_cache()
             return cur.lastrowid
+        finally:
+            conn.close()
+
+    def _insert_many(self, name, rows):
+        if not rows:
+            return 0
+        t = self._t(name)
+        if self.sb:
+            res = self.c._insert(t, rows)
+            clear_fees_cache()
+            return len(res) if isinstance(res, list) else len(rows)
+        cols = list(rows[0].keys())
+        conn = self._conn()
+        try:
+            conn.executemany(
+                f"INSERT INTO {t} ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+                [tuple(r[c] for c in cols) for r in rows],
+            )
+            conn.commit()
+            clear_fees_cache()
+            return len(rows)
         finally:
             conn.close()
 
@@ -143,6 +156,7 @@ class FeeStore:
         t = self._t(name)
         if self.sb:
             self.c._update(t, row, id_val)
+            clear_fees_cache()
             return
         cols = list(row.keys())
         conn = self._conn()
@@ -152,6 +166,7 @@ class FeeStore:
                 tuple(row[c] for c in cols) + (id_val,),
             )
             conn.commit()
+            clear_fees_cache()
         finally:
             conn.close()
 
@@ -159,40 +174,28 @@ class FeeStore:
         t = self._t(name)
         if self.sb:
             self.c._delete(t, id_val)
+            clear_fees_cache()
             return
         conn = self._conn()
         try:
             conn.execute(f"DELETE FROM {t} WHERE id = ?", (id_val,))
             conn.commit()
+            clear_fees_cache()
         finally:
             conn.close()
 
-    def _delete_where(self, name, **where):
-        t = self._t(name)
-        if self.sb:
-            params = {k: f"eq.{v}" for k, v in where.items()}
-            r = requests.delete(f"{self.c.url}/rest/v1/{t}", headers=self.c.headers, params=params, timeout=6)
-            r.raise_for_status()
-            return
-        conn = self._conn()
-        try:
-            conn.execute(
-                f"DELETE FROM {t} WHERE " + " AND ".join(f"{k} = ?" for k in where),
-                tuple(where.values()),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-    # ---------- şema ----------
+    # ---------- şema (oturum başına sadece 1 kez kontrol eder) ----------
     def ensure(self):
-        """(ok, hata_mesajı). SQLite'ta tabloları otomatik oluşturur."""
+        cache_key = f"fees_schema_ok_{self.sb}"
+        if st.session_state.get(cache_key):
+            return True, ""
         if self.sb:
             try:
                 for n in ("members", "fee_items", "assignments"):
                     self.c._get(self._t(n), params={"select": "id", "limit": 1})
+                st.session_state[cache_key] = True
                 return True, ""
-            except Exception as e:  # tablo yok ya da bağlantı sorunu
+            except Exception as e:
                 return False, str(e)
         conn = self._conn()
         try:
@@ -223,32 +226,39 @@ class FeeStore:
             conn.commit()
         finally:
             conn.close()
+        st.session_state[cache_key] = True
         return True, ""
 
     # ---------- sporcular ----------
     def members(self):
-        return sorted(self._select("members"), key=lambda m: (m["name"] or "").casefold())
+        return sorted(self._select_cached("members"), key=lambda m: (m["name"] or "").casefold())
 
     def add_members(self, names):
         existing = {m["name"].strip().casefold() for m in self.members()}
-        added = 0
+        to_add = []
         for raw in names:
             n = " ".join(str(raw).split())
             if n and n.casefold() not in existing:
-                self._insert("members", {"name": n})
+                to_add.append({"name": n})
                 existing.add(n.casefold())
-                added += 1
-        return added
+        return self._insert_many("members", to_add)
 
     def delete_members(self, member_ids):
+        id_set = set(member_ids)
+        all_asg = [a for a in self._select_cached("assignments") if a["member_id"] in id_set]
+        tx_Changed = False
+        for a in all_asg:
+            if a.get("transaction_id"):
+                tx_Changed = True
+            self._remove_assignment_and_tx(a)
         for mid in member_ids:
-            for a in self._select("assignments", member_id=mid):
-                self._remove_assignment_and_tx(a)
             self._delete("members", mid)
+        clear_fees_cache()
+        return tx_Changed
 
     # ---------- ücret kalemleri ----------
     def fee_items(self):
-        return sorted(self._select("fee_items"), key=lambda f: (f["name"] or "").casefold())
+        return sorted(self._select_cached("fee_items"), key=lambda f: (f["name"] or "").casefold())
 
     def add_fee_item(self, name, amount, category_id):
         return self._insert(
@@ -262,19 +272,21 @@ class FeeStore:
             fee_id,
         )
         if update_unpaid:
-            for a in self._select("assignments", fee_item_id=fee_id):
+            for a in self.assignments(fee_id):
                 if a.get("status") != "Ödendi":
                     self._update("assignments", {"amount": float(amount)}, a["id"])
+        clear_fees_cache()
 
     def delete_fee_item(self, fee_id):
-        for a in self._select("assignments", fee_item_id=fee_id):
+        for a in self.assignments(fee_id):
             self._remove_assignment_and_tx(a)
         self._delete("fee_items", fee_id)
+        clear_fees_cache()
 
     # ---------- atamalar ----------
     def assignments(self, fee_id):
         names = {m["id"]: m["name"] for m in self.members()}
-        rows = self._select("assignments", fee_item_id=fee_id)
+        rows = [dict(r) for r in self._select_cached("assignments") if r["fee_item_id"] == fee_id]
         for r in rows:
             r["member_name"] = names.get(r["member_id"], "?")
         rows.sort(key=lambda r: (r["member_name"] or "").casefold())
@@ -284,29 +296,31 @@ class FeeStore:
         fee = next((f for f in self.fee_items() if f["id"] == fee_id), None)
         if not fee:
             return 0
-        have = {a["member_id"] for a in self._select("assignments", fee_item_id=fee_id)}
-        n = 0
-        for mid in member_ids:
-            if mid not in have:
-                self._insert(
-                    "assignments",
-                    {
-                        "member_id": mid,
-                        "fee_item_id": fee_id,
-                        "amount": float(fee["amount"]),
-                        "status": "Bekliyor",
-                        "paid_date": None,
-                        "transaction_id": None,
-                    },
-                )
-                n += 1
-        return n
+        have = {a["member_id"] for a in self.assignments(fee_id)}
+        to_add = [
+            {
+                "member_id": mid,
+                "fee_item_id": fee_id,
+                "amount": float(fee["amount"]),
+                "status": "Bekliyor",
+                "paid_date": None,
+                "transaction_id": None,
+            }
+            for mid in member_ids
+            if mid not in have
+        ]
+        return self._insert_many("assignments", to_add)
 
     def remove_assignments(self, assignment_ids):
-        for aid in assignment_ids:
-            rows = self._select("assignments", id=aid)
-            if rows:
-                self._remove_assignment_and_tx(rows[0])
+        id_set = set(assignment_ids)
+        tx_changed = False
+        for a in self._select_cached("assignments"):
+            if a["id"] in id_set:
+                if a.get("transaction_id"):
+                    tx_changed = True
+                self._remove_assignment_and_tx(a)
+        clear_fees_cache()
+        return tx_changed
 
     def _remove_assignment_and_tx(self, a):
         if a.get("transaction_id"):
@@ -354,8 +368,9 @@ class FeeStore:
 
 
 # =====================================================================
-# UI
+# UI (@st.fragment sayesinde tüm sayfa/sidebar yeniden çalışmaz, anında tepki verir)
 # =====================================================================
+@st.fragment
 def render_fees_page(store, categories, invalidate_cb, today_date):
     ok, err = store.ensure()
     if not ok:
@@ -370,11 +385,6 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
 
     income_cats = [c for c in categories if c.get("type") == "Gelir"]
     tab_pay, tab_fee, tab_mem = st.tabs(["✅ Ödeme Takibi", "🧾 Ücret Kalemleri", "👥 Sporcu Havuzu"])
-
-    def done(msg):
-        invalidate_cb()
-        st.toast(msg)
-        st.rerun()
 
     # ------------------------------------------------ Ödeme Takibi
     with tab_pay:
@@ -463,7 +473,9 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
                                 n_date += 1
                         if n_paid or n_unpaid or n_date:
                             st.session_state["fees_pay_ver"] = ver + 1
-                            done(f"{n_paid} ödendi, {n_unpaid} geri alındı, {n_date} tarih güncellendi.")
+                            invalidate_cb()
+                            st.toast(f"✅ {n_paid} ödendi, {n_unpaid} geri alındı, {n_date} tarih güncellendi.")
+                            st.rerun(scope="fragment")
                         else:
                             st.info("Değişiklik yok.")
 
@@ -498,7 +510,8 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
                         fid = store.add_fee_item(name, amount, cat["id"])
                         ids = list(mem_map.keys()) if everyone else chosen
                         n = store.assign(fid, ids) if ids else 0
-                        done(f"'{name.strip()}' eklendi, {n} sporcuya atandı.")
+                        st.toast(f"✅ '{name.strip()}' eklendi, {n} sporcuya atandı.")
+                        st.rerun(scope="fragment")
 
         st.markdown("#### 🧾 Mevcut kalemler")
         for f in store.fee_items():
@@ -519,7 +532,8 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
                     upd = st.checkbox("Ödenmemiş sporcuların tutarını da güncelle", value=True)
                     if st.form_submit_button("Kaydet") and n_cat:
                         store.update_fee_item(f["id"], n_name, n_amount, n_cat["id"], upd)
-                        done("Kalem güncellendi.")
+                        st.toast("✅ Kalem güncellendi.")
+                        st.rerun(scope="fragment")
 
                 assigned_ids = {a["member_id"] for a in asg}
                 free = [m for m in members if m["id"] not in assigned_ids]
@@ -529,10 +543,12 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
                 b1, b2 = st.columns(2)
                 if b1.button("➕ Seçilenleri ata", key=f"fees_addbtn_{f['id']}") and add_sel:
                     store.assign(f["id"], add_sel)
-                    done("Sporcular atandı.")
+                    st.toast("✅ Sporcular atandı.")
+                    st.rerun(scope="fragment")
                 if b2.button("➕ Kalan herkesi ata", key=f"fees_addall_{f['id']}") and free:
                     store.assign(f["id"], [m["id"] for m in free])
-                    done("Tüm sporcular atandı.")
+                    st.toast("✅ Tüm sporcular atandı.")
+                    st.rerun(scope="fragment")
 
                 rm_map = {a["id"]: a["member_name"] + (" (ödedi)" if a["status"] == "Ödendi" else "") for a in asg}
                 rm_sel = st.multiselect(
@@ -542,14 +558,19 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
                     key=f"fees_rm_{f['id']}",
                 )
                 if st.button("➖ Seçilenleri çıkar", key=f"fees_rmbtn_{f['id']}") and rm_sel:
-                    store.remove_assignments(rm_sel)
-                    done("Atamalar kaldırıldı.")
+                    tx_ch = store.remove_assignments(rm_sel)
+                    if tx_ch:
+                        invalidate_cb()
+                    st.toast("✅ Atamalar kaldırıldı.")
+                    st.rerun(scope="fragment")
 
                 st.markdown("---")
                 sure = st.checkbox("Bu kalemi ve bağlı ödeme işlemlerini sil", key=f"fees_delchk_{f['id']}")
                 if st.button("🗑️ Kalemi Sil", key=f"fees_delbtn_{f['id']}", disabled=not sure):
                     store.delete_fee_item(f["id"])
-                    done("Kalem silindi.")
+                    invalidate_cb()
+                    st.toast("🗑️ Kalem silindi.")
+                    st.rerun(scope="fragment")
 
     # ------------------------------------------------ Sporcu Havuzu
     with tab_mem:
@@ -562,7 +583,11 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
             )
             if st.form_submit_button("Ekle", type="primary"):
                 n = store.add_members(txt.splitlines())
-                done(f"{n} sporcu eklendi.") if n else st.info("Yeni isim bulunamadı (zaten kayıtlı olabilir).")
+                if n:
+                    st.toast(f"✅ {n} sporcu anında eklendi.")
+                    st.rerun(scope="fragment")
+                else:
+                    st.info("Yeni isim bulunamadı (zaten kayıtlı olabilir).")
 
         members = store.members()
         st.markdown(f"#### 👥 Kayıtlı sporcular ({len(members)})")
@@ -572,7 +597,10 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
             del_sel = st.multiselect("Silinecek sporcular", list(mem_map.keys()), format_func=lambda i: mem_map[i])
             sure = st.checkbox("Silmeyi onaylıyorum (ödeme kayıtları ve bağlı işlemler de silinir)", key="fees_mem_sure")
             if st.button("🗑️ Seçilenleri Sil", disabled=not (del_sel and sure)):
-                store.delete_members(del_sel)
-                done("Sporcular silindi.")
+                tx_ch = store.delete_members(del_sel)
+                if tx_ch:
+                    invalidate_cb()
+                st.toast("🗑️ Seçilen sporcular silindi.")
+                st.rerun(scope="fragment")
         else:
             st.info("Henüz sporcu yok.")
