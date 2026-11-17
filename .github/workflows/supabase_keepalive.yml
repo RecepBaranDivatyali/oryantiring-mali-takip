@@ -1,0 +1,47 @@
+name: Supabase Keep-Alive Ping
+
+on:
+  schedule:
+    # Her 3 günde bir saat 09:00 UTC'de çalışarak Supabase ücretsiz planının 7 günlük uyku (Pause) moduna geçmesini engeller
+    - cron: '0 9 */3 * *'
+  workflow_dispatch:
+
+jobs:
+  keepalive-ping:
+    name: Ping Supabase REST API
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Keep-Alive Request to Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
+            echo "::error::SUPABASE_URL veya SUPABASE_KEY GitHub Secrets içinde tanımlanmamış!"
+            exit 1
+          fi
+
+          CLEAN_URL="${SUPABASE_URL%/}"
+          ENDPOINT="${CLEAN_URL}/rest/v1/ory_interest_rate_logs?select=id&limit=1"
+
+          echo "Supabase Keep-Alive isteği gönderiliyor: ${ENDPOINT}"
+
+          HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "apikey: ${SUPABASE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_KEY}" \
+            -H "Content-Type: application/json" \
+            --max-time 15 \
+            "${ENDPOINT}")
+
+          HTTP_BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+          HTTP_STATUS=$(echo "$HTTP_RESPONSE" | tail -n 1)
+
+          echo "HTTP Durum Kodu: ${HTTP_STATUS}"
+          echo "Yanıt Gövdesi: ${HTTP_BODY}"
+
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo "✅ Supabase Keep-Alive ping başarılı! Veritabanı aktif tutuldu."
+          else
+            echo "::error::❌ Supabase Keep-Alive ping başarısız oldu! HTTP Durum Kodu: ${HTTP_STATUS}"
+            exit 1
+          fi

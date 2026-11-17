@@ -1,0 +1,12 @@
+# Özel veriler: GitHub'a gitmemeli
+ekonomi.db
+*.db
+*.sqlite
+yedekler/
+.streamlit/secrets.toml
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
