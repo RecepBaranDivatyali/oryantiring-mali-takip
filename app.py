@@ -13,7 +13,7 @@ from utils import (
     render_member_ledger,
     get_known_members,
 )
-from utils.fees import FeeStore, render_fees_page
+from utils.fees import FeeStore, render_fees_page, get_pending_fees_total
 
 # Database configuration
 DB_PATH = 'ekonomi.db'
@@ -1032,14 +1032,20 @@ def parse_turkish_amount(val_str):
 # --- UI HELPERS ---
 
 def get_category_badge_html(emoji, name, color):
-    return f"<span class='category-badge' style='background-color: {color}15; color: {color}; padding: 4px 10px; border-radius: 8px; font-weight: 600; font-size: 0.78rem; border: 1px solid {color}30; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;'><span style='font-size: 0.82rem; line-height: 1;'>{emoji}</span><span>{name}</span></span>"
+    import html as _html
+    e_safe = _html.escape(str(emoji or "📌"))
+    n_safe = _html.escape(str(name or "Diğer"))
+    c_safe = color or "#64748B"
+    return f"<span class='category-badge' style='background-color: {c_safe}18; color: {c_safe}; padding: 4px 10px; border-radius: 8px; font-weight: 600; font-size: 0.78rem; border: 1px solid {c_safe}35; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;'><span style='font-size: 0.82rem; line-height: 1;'>{e_safe}</span><span>{n_safe}</span></span>"
 
 def render_tx_row_html(tx, sign, amt_color, extra_style=""):
-    badge = get_category_badge_html(tx['emoji'], tx['category_name'], tx['color'])
-    desc = tx['description'] or ''
-    amount_str = f"{sign} {tx['amount']:,.2f} TL"
-    time_suffix = f" ({tx['time_range']})" if 'time_range' in tx else ""
-    date_str = f"{tx['date']}{time_suffix}"
+    import html as _html
+    badge = get_category_badge_html(tx.get('emoji'), tx.get('category_name'), tx.get('color'))
+    raw_desc = tx.get('description') or tx.get('category_name') or ''
+    desc = _html.escape(str(raw_desc))
+    amount_str = f"{sign} {float(tx.get('amount') or 0.0):,.2f} TL"
+    time_suffix = f" ({_html.escape(str(tx['time_range']))})" if tx.get('time_range') else ""
+    date_str = f"{_html.escape(str(tx.get('date') or ''))}{time_suffix}"
     return f'<div class="tx-feed-item" style="{extra_style}"><div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; min-width: 0;"><div style="display: flex; align-items: center; gap: 8px; min-width: 0;">{badge}<div style="font-weight: 500; font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{desc}">{desc}</div></div><div style="text-align: right; flex-shrink: 0;"><div style="color: {amt_color}; font-weight: 700; font-size: 0.92rem;">{amount_str}</div><div style="font-size: 0.7rem; color: #94A3B8; margin-top: 2px;">{date_str}</div></div></div></div>'
 
 def get_debt_badge_html(due_date_str):
@@ -1104,13 +1110,13 @@ def inject_custom_css():
         background: transparent;
     }
     
-    /* Spendee Metric Cards styling */
+    /* Spendee Metric Cards styling (theme-aware) */
     .metric-card {
-        background: #FFFFFF;
-        border: 1px solid #E2E8F0;
+        background: var(--secondary-background-color, #1E293B);
+        border: 1px solid rgba(148, 163, 184, 0.22);
         border-radius: 16px;
         padding: 16px 20px;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.03), 0 2px 4px -1px rgba(0, 0, 0, 0.01);
+        box-shadow: 0 4px 10px -2px rgba(0, 0, 0, 0.08);
         transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         position: relative;
         overflow: hidden;
@@ -1118,8 +1124,8 @@ def inject_custom_css():
     }
     
     .metric-card:hover {
-        transform: translateY(-4px);
-        box-shadow: 0 12px 20px -8px rgba(0, 0, 0, 0.08);
+        transform: translateY(-3px);
+        box-shadow: 0 12px 20px -8px rgba(0, 0, 0, 0.16);
     }
     
     .metric-card::before {
@@ -1128,7 +1134,7 @@ def inject_custom_css():
         top: 0;
         left: 0;
         width: 100%;
-        height: 5px;
+        height: 4px;
         background: linear-gradient(90deg, #3B82F6, #10B981);
     }
     
@@ -1143,9 +1149,10 @@ def inject_custom_css():
     .metric-title {
         font-size: 0.72rem;
         font-weight: 700;
-        color: #64748B;
+        color: var(--text-color, #94A3B8);
+        opacity: 0.72;
         text-transform: uppercase;
-        letter-spacing: 1.2px;
+        letter-spacing: 1.1px;
         margin-bottom: 6px;
     }
     
@@ -1153,30 +1160,31 @@ def inject_custom_css():
         font-size: 1.45rem;
         font-weight: 800;
         letter-spacing: -0.5px;
-        color: #1E293B;
+        color: var(--text-color, #F8FAFC);
     }
     
     .metric-sub {
         font-size: 0.7rem;
-        color: #94A3B8;
+        color: var(--text-color, #94A3B8);
+        opacity: 0.65;
         margin-top: 4px;
         font-weight: 500;
     }
     
     /* Transaction feed card layout */
     .tx-feed-item {
-        background: #FFFFFF;
-        border: 1px solid #E2E8F0;
+        background: var(--secondary-background-color, #1E293B);
+        border: 1px solid rgba(148, 163, 184, 0.22);
         border-radius: 12px;
         padding: 10px 14px;
         margin-bottom: 8px;
         transition: all 0.2s ease;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.01);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
     }
     
     .tx-feed-item:hover {
-        background: #F8FAFC;
-        border-color: #CBD5E1;
+        border-color: rgba(148, 163, 184, 0.45);
+        transform: translateY(-1px);
     }
     
     /* Balance Header Grid layout */
@@ -1215,29 +1223,6 @@ def inject_custom_css():
         color: #10B981;
         background: rgba(16, 185, 129, 0.08);
         border: 1px solid rgba(16, 185, 129, 0.15);
-    }
-    
-    /* Dark Mode support */
-    @media (prefers-color-scheme: dark) {
-        .metric-card {
-            background: #1E293B;
-            border-color: #334155;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
-        }
-        .metric-value {
-            color: #F8FAFC;
-        }
-        .metric-title {
-            color: #94A3B8;
-        }
-        .tx-feed-item {
-            background: #1E293B;
-            border-color: #334155;
-        }
-        .tx-feed-item:hover {
-            background: #2D3748;
-            border-color: #4A5568;
-        }
     }
     
     /* Align all horizontal blocks to center by default (for micro-rows like transaction lists) */
@@ -1345,19 +1330,18 @@ def inject_custom_css():
         transition: all 0.2s ease-in-out !important;
     }
     
-    /* ====== st.expander debt card styling ====== */
-    /* Outer container - remove Streamlit's default border/bg */
+    /* ====== st.expander card styling (theme-aware) ====== */
     div[data-testid="stExpander"] {
-        border: 1px solid #E2E8F0 !important;
+        border: 1px solid rgba(148, 163, 184, 0.24) !important;
         border-radius: 12px !important;
-        margin-bottom: -4px !important;
+        margin-bottom: 6px !important;
         overflow: hidden !important;
         transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
         background: transparent !important;
     }
     div[data-testid="stExpander"]:hover {
-        border-color: #CBD5E1 !important;
-        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.06) !important;
+        border-color: rgba(148, 163, 184, 0.48) !important;
+        box-shadow: 0 4px 10px -2px rgba(0, 0, 0, 0.08) !important;
     }
     /* Expander header (summary row) */
     div[data-testid="stExpander"] > details > summary {
@@ -1381,8 +1365,8 @@ def inject_custom_css():
     }
     /* Expander body */
     div[data-testid="stExpander"] > details > div[data-testid="stExpanderDetails"] {
-        padding: 4px 14px 12px 14px !important;
-        border-top: 1px solid #F1F5F9 !important;
+        padding: 8px 14px 12px 14px !important;
+        border-top: 1px solid rgba(148, 163, 184, 0.16) !important;
     }
     /* Buttons inside expander - reset circle style, keep normal full-width */
     div[data-testid="stExpander"] div[data-testid="stButton"] > button {
@@ -1410,18 +1394,6 @@ def inject_custom_css():
         flex: 1 1 0% !important;
         padding: 0 !important;
         margin: 0 !important;
-    }
-    @media (prefers-color-scheme: dark) {
-        div[data-testid="stExpander"] {
-            border-color: #334155 !important;
-            background: transparent !important;
-        }
-        div[data-testid="stExpander"]:hover {
-            border-color: #475569 !important;
-        }
-        div[data-testid="stExpander"] > details > div[data-testid="stExpanderDetails"] {
-            border-top-color: #1E293B !important;
-        }
     }
     
     @media (prefers-color-scheme: dark) {
@@ -2198,100 +2170,43 @@ if db_error and is_using_supabase():
     st.stop()
 
 
-# Navigation
-st.sidebar.markdown(
-    """
-    <div style='text-align: center; margin-bottom: 25px;'>
-        <h2 style='margin-bottom: 5px; color: #3B82F6;'>🧭 ODTÜ Oryantiring</h2>
-        <span style='font-size: 0.85rem; color: #64748B; font-weight: 600; letter-spacing: 1px; text-transform: uppercase;'>Mali Yönetim Portalı</span>
-    </div>
-    """, 
-    unsafe_allow_html=True
-)
-st.sidebar.markdown("---")
-st.sidebar.subheader("🧭 Menü")
-if "menu_selection" not in st.session_state:
-    st.session_state.menu_selection = "📊 Dashboard"
-
+# Navigation & Programmatic Redirect
 menu_options = [
-    "📊 Dashboard", 
-    "📝 İşlem Ekle/Düzenle", 
-    "🏷️ Kategori Yönetimi", 
-    "🤝 Borç Takip Sistemi", 
-    "💳 Ücret & Ödeme Takibi", 
-    "🏕️ Kademeler", 
-    "⚙️ Faiz & Geçmişi Düzenle"
+    "🏠 Özet",
+    "🏕️ Kademe & Ödemeler",
+    "💸 İşlemler",
+    "🤝 Borç & Alacak",
+    "⚙️ Ayarlar & Raporlar",
 ]
+if "_nav_target" in st.session_state:
+    _target = st.session_state.pop("_nav_target")
+    if _target in menu_options:
+        st.session_state["menu_selection"] = _target
+if st.session_state.get("menu_selection") not in menu_options:
+    st.session_state["menu_selection"] = "🏠 Özet"
 
-menu_selection = st.sidebar.radio(
-    "Gitmek İstediğiniz Sayfa",
-    menu_options,
-    key="menu_selection"
+_db_pill_html = (
+    "<span style='display:inline-block; margin-top:6px; padding:3px 10px; border-radius:999px; font-size:0.72rem; font-weight:700; background:rgba(16,185,129,0.12); color:#10B981; border:1px solid rgba(16,185,129,0.28);'>🟢 Bulut (Supabase)</span>"
+    if is_using_supabase()
+    else "<span style='display:inline-block; margin-top:6px; padding:3px 10px; border-radius:999px; font-size:0.72rem; font-weight:700; background:rgba(245,158,11,0.12); color:#F59E0B; border:1px solid rgba(245,158,11,0.28);'>🟡 Yerel (SQLite)</span>"
 )
 
-# --- ORKESTRASYON & SİSTEM SAĞLIK HUB ---
+st.sidebar.markdown(
+    f"""
+    <div style='text-align: center; margin-bottom: 14px;'>
+        <h2 style='margin-bottom: 2px; color: #3B82F6;'>🧭 ODTÜ Oryantiring</h2>
+        <div style='font-size: 0.78rem; color: #94A3B8; font-weight: 600; letter-spacing: 1px; text-transform: uppercase;'>Mali Yönetim</div>
+        {_db_pill_html}
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 st.sidebar.markdown("---")
-with st.sidebar.expander("⚡ Sistem Sağlığı & Orkestrasyon", expanded=False):
-    if is_using_supabase():
-        st.markdown("""
-        <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 10px; padding: 10px; margin-bottom: 8px;">
-            <div style="color: #10B981; font-weight: 700; font-size: 0.85rem;">🟢 Bulut: Supabase Aktif</div>
-            <div style="font-size: 0.72rem; color: #64748B;">Canlı veri tabanı senkronize</div>
-        </div>
-        """, unsafe_allow_html=True)
-        if st.button("📂 Çevrimdışı (Yerel) Moda Geç", key="switch_to_offline_btn", use_container_width=True):
-            st.session_state["force_offline_mode"] = True
-            invalidate_cache()
-            st.toast("Yerel SQLite moduna geçildi.", icon="📂")
-            st.rerun()
-    else:
-        st.markdown("""
-        <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 10px; padding: 10px; margin-bottom: 8px;">
-            <div style="color: #F59E0B; font-weight: 700; font-size: 0.85rem;">🟡 Yerel SQLite: Aktif</div>
-            <div style="font-size: 0.72rem; color: #64748B;">Yedek / Kesintisiz Çalışma Modu</div>
-        </div>
-        """, unsafe_allow_html=True)
-        if USE_SUPABASE:
-            if st.button("☁️ Bulut (Supabase) Modunu Dene", key="switch_to_cloud_btn", use_container_width=True):
-                st.session_state["force_offline_mode"] = False
-                invalidate_cache()
-                st.toast("Bulut modu kontrol ediliyor...", icon="☁️")
-                st.rerun()
-                
-    st.markdown("<div style='font-size: 0.74rem; color: #64748B; margin-top: 4px; margin-bottom: 8px;'>🚀 Turbo Önbellek: <b>Aktif</b> (Ultra Hızlı)</div>", unsafe_allow_html=True)
-    
-    col_c_btn1, col_c_btn2 = st.columns(2)
-    with col_c_btn1:
-        if st.button("🧹 Önbellek", key="btn_clear_cache", use_container_width=True, help="Önbelleği sıfırla"):
-            invalidate_cache()
-            st.toast("Önbellek temizlendi!", icon="⚡")
-            st.rerun()
-    with col_c_btn2:
-        if st.button("🩺 Test Et", key="btn_test_db", use_container_width=True, help="Supabase bağlantısını test et"):
-            is_ok, lat, msg = test_supabase_connection()
-            if is_ok:
-                st.toast(f"Supabase Aktif: {lat}ms", icon="🟢")
-            else:
-                st.toast(f"{msg}", icon="🔴")
-
-with st.sidebar:
-    try:
-        _sb_client = SupabaseClient(SUPABASE_URL, SUPABASE_KEY) if is_using_supabase() else None
-        render_backup_sync_ui(
-            categories=get_categories(),
-            transactions=get_transactions(),
-            debts=get_debts(),
-            rate_logs=get_rate_logs(),
-            is_using_supabase_Flag=is_using_supabase(),
-            supabase_client=_sb_client,
-        )
-    except Exception as _backup_err:
-        st.caption(f"Yedekleme paneli yüklenemedi: {_backup_err}")
-
-st.sidebar.markdown("---")
-st.sidebar.info(
-    "💡 **ON Hesap Faiz Kuralı:**\n"
-    "Kasadaki paranın Burgan ON limitlerine göre belirlenen 'vadesiz bakiye' kısmı faizden muaftır. Aşan tutar günlük bileşik faiz ile nemalandırılır. Faiz kazançlarından %17.5 stopaj vergisi kesilmektedir."
+menu_selection = st.sidebar.radio(
+    "Menü",
+    menu_options,
+    key="menu_selection",
+    label_visibility="collapsed",
 )
 
 st.sidebar.markdown("---")
@@ -2304,45 +2219,73 @@ if st.sidebar.button("🚪 Çıkış Yap", use_container_width=True):
 
 # --- MAIN PAGE RENDERER ---
 
-# Run simulation only on pages that use it (Dashboard & Faiz) for instant speed on other pages
-if menu_selection in ("📊 Dashboard", "⚙️ Faiz & Geçmişi Düzenle"):
+# Run simulation only on pages that use it for instant speed on other pages
+if menu_selection in ("🏠 Özet", "⚙️ Ayarlar & Raporlar"):
     book_vault, total_interest_earned, daily_log, accumulated_interest = run_simulation()
     current_vault = book_vault
 else:
     book_vault, total_interest_earned, daily_log, accumulated_interest = 0.0, 0.0, [], 0.0
     current_vault = 0.0
 
-if menu_selection == "📊 Dashboard":
-    # Get Debts for Dashboard header
+
+if menu_selection == "🏠 Özet":
     debt_totals = get_pending_debts_totals()
     total_payable = debt_totals['Verilecek']
     total_receivable = debt_totals['Alınacak']
-    
+
+    _sb_client_dash = SupabaseClient(SUPABASE_URL, SUPABASE_KEY) if is_using_supabase() else None
+    _fee_store_dash = FeeStore(is_using_supabase(), _sb_client_dash, DB_PATH)
+    pending_fees_total = 0.0
+    try:
+        _ok_fees, _ = _fee_store_dash.ensure()
+        if _ok_fees:
+            pending_fees_total = get_pending_fees_total(_fee_store_dash)
+    except Exception:
+        pending_fees_total = 0.0
+
     # 1. Centered Header Display (Main Vault)
+    _extra_notes = []
+    if accumulated_interest > 0:
+        _extra_notes.append(f"⏳ Hesaba Geçecek Birikmiş Net Faiz: +{accumulated_interest:,.2f} TL")
+    if pending_fees_total > 0:
+        _extra_notes.append(f"💳 Bekleyen Sporcu Tahsilatı: {pending_fees_total:,.2f} TL")
+    _notes_html = (
+        "<div style='font-size: 0.78rem; color: #8B5CF6; font-weight: 600; margin-top: 6px; text-align: center;'>"
+        + " &nbsp;|&nbsp; ".join(_extra_notes)
+        + "</div>"
+        if _extra_notes
+        else ""
+    )
+
     st.markdown(f"""
-    <div style="text-align: center; margin: 1.5rem 0; font-family: 'Plus Jakarta Sans', sans-serif;">
+    <div style="text-align: center; margin: 1.2rem 0 1.4rem 0; font-family: 'Plus Jakarta Sans', sans-serif;">
         <div class="balance-header-grid">
-            <!-- Left: Payable (Kırmızı) -->
-            <div class="balance-badge badge-payable">
-                ( - {total_payable:,.2f} TL )
-            </div>
-            <!-- Center: Vault -->
-            <div class="balance-main">
-                {current_vault:,.2f} TL
-            </div>
-            <!-- Right: Receivable (Yeşil) -->
-            <div class="balance-badge badge-receivable">
-                ( + {total_receivable:,.2f} TL )
-            </div>
+            <div class="balance-badge badge-payable">( - {total_payable:,.2f} TL )</div>
+            <div class="balance-main">{current_vault:,.2f} TL</div>
+            <div class="balance-badge badge-receivable">( + {total_receivable:,.2f} TL )</div>
         </div>
-        <div style="font-size: 0.78rem; color: #64748B; margin-top: 8px; text-transform: uppercase; letter-spacing: 2px; font-weight: 700;">
+        <div style="font-size: 0.78rem; color: #64748B; margin-top: 6px; text-transform: uppercase; letter-spacing: 2px; font-weight: 700;">
             🧭 GÜNCEL KASA DENGESİ VE BORÇLAR
         </div>
-        {f"<div style='font-size: 0.78rem; color: #8B5CF6; font-weight: 600; margin-top: 4px; text-align: center;'>⏳ Hesaba Geçecek Birikmiş Net Faiz: +{accumulated_interest:,.2f} TL</div>" if accumulated_interest > 0 else ""}
+        {_notes_html}
     </div>
     """, unsafe_allow_html=True)
-    
-    # 2. Overdue Warning Alert
+
+    # 2. Hızlı İşlem Çubuğu
+    qa1, qa2, qa3 = st.columns(3)
+    if qa1.button("➕ Gelir / Gider Ekle", type="primary", use_container_width=True, key="qa_add_tx"):
+        st.session_state["_nav_target"] = "💸 İşlemler"
+        st.session_state["show_new_tx_form"] = True
+        st.rerun()
+    if qa2.button("✅ Sporcu Ödemesi İşaretle", use_container_width=True, key="qa_mark_fee"):
+        st.session_state["_nav_target"] = "🏕️ Kademe & Ödemeler"
+        st.rerun()
+    if qa3.button("🤝 Borç / Alacak Ekle", use_container_width=True, key="qa_add_debt"):
+        st.session_state["_nav_target"] = "🤝 Borç & Alacak"
+        st.session_state["show_new_debt_form"] = True
+        st.rerun()
+
+    # 3. Compact Overdue Alert
     all_debts_db = get_debts()
     pending_debts_db = [d for d in all_debts_db if d['status'] == 'Bekliyor']
     overdue_count = 0
@@ -2356,14 +2299,17 @@ if menu_selection == "📊 Dashboard":
             except Exception:
                 pass
     if overdue_count > 0:
-        st.error(f"⚠️ **Vadesi Gelmiş/Geçmiş {overdue_count} adet borç işlemi bulunuyor!** Detaylar için sol menüden **🤝 Borç Takip Sistemi** sayfasını ziyaret edebilirsiniz.")
+        ov_c1, ov_c2 = st.columns([4, 1])
+        ov_c1.warning(f"⚠️ Vadesi gelmiş veya geçmiş **{overdue_count} adet** borç/alacak kaydı bulunuyor.")
+        if ov_c2.button("Borçlara Git", use_container_width=True, key="qa_goto_debts"):
+            st.session_state["_nav_target"] = "🤝 Borç & Alacak"
+            st.rerun()
 
-    # 3. Modern Metric Cards
+    # 4. Modern Metric Cards
     col1, col2, col3 = st.columns(3)
-    
     vadesiz_limit, rate_today, qualifies = get_on_account_details(current_vault, current_active_rate)
     earning_base = max(0.0, current_vault - vadesiz_limit) if qualifies else 0.0
-    
+
     with col1:
         st.markdown(f"""
         <div class="metric-card">
@@ -2378,7 +2324,7 @@ if menu_selection == "📊 Dashboard":
         st.markdown(f"""
         <div class="metric-card faiz">
             <span class="metric-marker"></span>
-            <div class="metric-title">📈 Toplam Biriken Faiz</div>
+            <div class="metric-title">📈 Toplam Net Faiz</div>
             <div class="metric-value" style="color: #8B5CF6;">{total_interest_earned:,.2f} TL</div>
             <div class="metric-sub">Kazanılan Net Getiri (%17.5 Stopaj Kesintili)</div>
         </div>
@@ -2392,505 +2338,412 @@ if menu_selection == "📊 Dashboard":
         st.markdown(f"""
         <div class="metric-card gider">
             <span class="metric-marker"></span>
-            <div class="metric-title">🗓️ Bu Ayki Net Akış</div>
+            <div class="metric-title">🗓️ Bu Ay Net Akış</div>
             <div class="metric-value" style="color: {net_color};">{net_sign}{net_flow:,.2f} TL</div>
             <div class="metric-sub">Gelir: +{m_flow['Gelir']:,.1f} TL | Gider: -{m_flow['Gider']:,.1f} TL</div>
         </div>
         """, unsafe_allow_html=True)
-        
+
     st.markdown("<br>", unsafe_allow_html=True)
-    
-    # 3. Son Yapılan İşlemler (Tam Genişlik & Sayfalamalı)
-    st.markdown("### 🕒 Son Yapılan İşlemler")
+
+    # 5. Clean 3-Tab Dashboard Body
     recent_txs = get_transactions()
-    
-    if not recent_txs:
-        st.info("Henüz kaydedilmiş bir işlem bulunmuyor.")
-    else:
-        # Initialize page state
-        if 'dash_tx_page' not in st.session_state:
-            st.session_state.dash_tx_page = 0
-            
-        page_size = 5
-        total_txs = len(recent_txs)
-        total_pages = (total_txs + page_size - 1) // page_size
-        
-        # Boundary checks
-        if st.session_state.dash_tx_page >= total_pages:
-            st.session_state.dash_tx_page = total_pages - 1
-        if st.session_state.dash_tx_page < 0:
-            st.session_state.dash_tx_page = 0
-            
-        current_page = st.session_state.dash_tx_page
-        start_idx = current_page * page_size
-        end_idx = start_idx + page_size
-        
-        # Display transactions for current page
-        st.markdown('<span class="dashboard-tx-list-marker"></span>', unsafe_allow_html=True)
-        for tx in recent_txs[start_idx:end_idx]:
-            sign = "+" if tx['type'] == 'Gelir' else "-"
-            raw_desc = tx['description'] if tx['description'] else tx['category_name']
-            clean_desc = raw_desc.replace("~", "")
-            
-            # Determine font size dynamically
-            desc_len = len(clean_desc)
-            if desc_len <= 12:
-                desc_font_size = "0.88rem"
-            elif desc_len <= 18:
-                desc_font_size = "0.80rem"
-            elif desc_len <= 26:
-                desc_font_size = "0.74rem"
-            elif desc_len <= 35:
-                desc_font_size = "0.68rem"
-            else:
-                desc_font_size = "0.60rem"
-                
-            amt_color = "#10B981" if tx['type'] == 'Gelir' else "#EF4444"
-            amt_formatted = f"{sign} {tx['amount']:,.2f} TL"
-            
-            # Dynamic style block to absolute-position the amount (strong) and date (code) inside expander header
-            # Also removes expander animations, hides the chevron icon, and shifts headers left
-            st.markdown(f"""
-            <style>
-            div[data-testid="stExpander"]:has(#dash-tx-id-{tx['id']}) > details > summary {{
-                padding-right: 125px !important;
-                padding-left: 12px !important;
-                position: relative !important;
-                pointer-events: none !important;
-                cursor: default !important;
-                list-style: none !important;
-            }}
-            div[data-testid="stExpander"]:has(#dash-tx-id-{tx['id']}) div[data-testid="stExpanderToggleIcon"],
-            div[data-testid="stExpander"]:has(#dash-tx-id-{tx['id']}) > details > summary svg,
-            div[data-testid="stExpander"]:has(#dash-tx-id-{tx['id']}) > details > summary::marker {{
-                display: none !important;
-            }}
-            div[data-testid="stExpander"]:has(#dash-tx-id-{tx['id']}):hover {{
-                border-color: #E2E8F0 !important;
-                box-shadow: none !important;
-            }}
-            @media (prefers-color-scheme: dark) {{
-                div[data-testid="stExpander"]:has(#dash-tx-id-{tx['id']}):hover {{
-                    border-color: #334155 !important;
-                }}
-            }}
-            div[data-testid="stExpander"]:has(#dash-tx-id-{tx['id']}) > details > summary em {{
-                background-color: {tx['color']}15 !important;
-                color: {tx['color']} !important;
-                border: 1px solid {tx['color']}30 !important;
-                font-style: normal !important;
-                padding: 2px 8px !important;
-                border-radius: 8px !important;
-                font-size: 0.72rem !important;
-                font-weight: 600 !important;
-                display: inline-flex !important;
-                align-items: center !important;
-                gap: 4px !important;
-                white-space: nowrap !important;
-                margin-right: 6px !important;
-            }}
-            div[data-testid="stExpander"]:has(#dash-tx-id-{tx['id']}) > details > summary del {{
-                text-decoration: none !important;
-                white-space: nowrap !important;
-                font-size: {desc_font_size} !important;
-                font-weight: 600 !important;
-                color: inherit !important;
-            }}
-            div[data-testid="stExpander"]:has(#dash-tx-id-{tx['id']}) > details > summary strong {{
-                color: {amt_color} !important;
-                position: absolute !important;
-                right: 14px !important;
-                top: 8px !important;
-                font-size: 0.90rem !important;
-                font-weight: 700 !important;
-            }}
-            div[data-testid="stExpander"]:has(#dash-tx-id-{tx['id']}) > details > summary code {{
-                position: absolute !important;
-                right: 14px !important;
-                bottom: 8px !important;
-                background: transparent !important;
-                border: none !important;
-                padding: 0 !important;
-                margin: 0 !important;
-                color: #94A3B8 !important;
-                font-size: 0.7rem !important;
-                font-weight: 400 !important;
-                font-family: inherit !important;
-            }}
-            </style>
-            """, unsafe_allow_html=True)
-            
-            if tx['category_name']:
-                cat_prefix = f"_{tx['emoji']} {tx['category_name']}_ · "
-            else:
-                cat_prefix = ""
-                
-            exp_title = f"{cat_prefix}~~{clean_desc}~~ **{amt_formatted}** `{tx['date']}`"
-            with st.expander(exp_title, expanded=False):
-                st.markdown(f'<div id="dash-tx-id-{tx["id"]}"></div>', unsafe_allow_html=True)
-            
-        # Pagination controls
-        if total_pages > 1:
-            p_col1, p_col2, p_col3, p_col4, p_col5 = st.columns([4, 1, 2, 1, 4])
-            with p_col2:
-                if st.button("◀️", key="prev_dash_tx", disabled=(current_page == 0)):
-                    st.session_state.dash_tx_page -= 1
-                    st.rerun()
-            with p_col3:
-                st.markdown(f"<div style='text-align: center; font-weight: 600; font-size: 0.9rem; padding-top: 6px; white-space: nowrap;'>Sayfa {current_page + 1} / {total_pages}</div>", unsafe_allow_html=True)
-            with p_col4:
-                if st.button("▶️", key="next_dash_tx", disabled=(current_page == total_pages - 1)):
-                    st.session_state.dash_tx_page += 1
-                    st.rerun()
-                    
-    st.markdown("<br>", unsafe_allow_html=True)
-    
-    # 4. Grafikler Bölümü (Alt alta / Yan yana)
-    col_chart1, col_chart2 = st.columns(2)
-    
-    with col_chart1:
-        st.markdown("### 📈 Kasa Bakiyesi Zaman Serisi")
-        if daily_log:
-            df_log = pd.DataFrame(daily_log)
-            df_log['Tarih'] = pd.to_datetime(df_log['date'])
-            df_log = df_log.rename(columns={'vault_after_interest': 'vault_balance', 'interest_earned': 'daily_interest'})
-            
-            # Calculate Y-axis limits
-            min_val = df_log['vault_balance'].min()
-            max_val = df_log['vault_balance'].max()
-            nice_min, nice_max, step = get_nice_limits(min_val, max_val)
-            
-            y_ticks = []
-            curr = nice_min
-            while curr <= nice_max + (step * 0.01):
-                y_ticks.append(curr)
-                curr += step
-                
-            start_date = df_log['Tarih'].min()
-            end_date = df_log['Tarih'].max()
-            
-            # Generate X-axis ticks (3 or 4 dates)
-            delta_days = (end_date - start_date).days
-            if delta_days >= 3:
-                t1 = start_date + timedelta(days=delta_days // 3)
-                t2 = start_date + timedelta(days=(2 * delta_days) // 3)
-                x_ticks = [start_date, t1, t2, end_date]
-            elif delta_days == 2:
-                mid_date = start_date + timedelta(days=1)
-                x_ticks = [start_date, mid_date, end_date]
-            else:
-                x_ticks = [start_date, end_date]
-            
-            line_chart = alt.Chart(df_log).mark_line(
-                color='#3B82F6', 
-                strokeWidth=3,
-                point=alt.OverlayMarkDef(color='#3B82F6', size=40)
-            ).encode(
-                x=alt.X('Tarih:T', title=None, axis=alt.Axis(
-                    values=x_ticks, 
-                    format='%Y-%m-%d', 
-                    labelAngle=0,
-                    grid=True
-                )),
-                y=alt.Y('vault_balance:Q', title=None, scale=alt.Scale(domain=[nice_min, nice_max]), axis=alt.Axis(
-                    values=y_ticks,
-                    format=',.0f'
-                ))
-            ).properties(
-                height=300
-            ).configure_view(
-                strokeWidth=0
-            )
-            st.altair_chart(line_chart, use_container_width=True)
+    tab_recent, tab_cat_dist, tab_charts = st.tabs([
+        "🕒 Son İşlemler",
+        "📊 Kategori Dağılımı",
+        "📈 Kasa & Faiz Grafikleri",
+    ])
+
+    with tab_recent:
+        if not recent_txs:
+            st.info("Henüz kaydedilmiş bir işlem bulunmuyor.")
         else:
-            st.info("Kasa zaman serisini çizmek için yeterli veri bulunamadı. Lütfen bir gelir/gider işlemi ekleyin.")
-            
-    with col_chart2:
-        st.markdown("### 💸 Günlük Faiz Getirisi")
-        if daily_log:
-            df_log = pd.DataFrame(daily_log)
-            df_log['Tarih'] = pd.to_datetime(df_log['date'])
-            df_log = df_log.rename(columns={'vault_after_interest': 'vault_balance', 'interest_earned': 'daily_interest'})
-            
-            # Calculate Y-axis limits
-            min_val = df_log['daily_interest'].min()
-            max_val = df_log['daily_interest'].max()
-            nice_min, nice_max, step = get_nice_limits(min_val, max_val)
-            
-            y_ticks = []
-            curr = nice_min
-            while curr <= nice_max + (step * 0.01):
-                y_ticks.append(curr)
-                curr += step
-                
-            start_date = df_log['Tarih'].min()
-            end_date = df_log['Tarih'].max()
-            
-            # Generate X-axis ticks (3 or 4 dates)
-            delta_days = (end_date - start_date).days
-            if delta_days >= 3:
-                t1 = start_date + timedelta(days=delta_days // 3)
-                t2 = start_date + timedelta(days=(2 * delta_days) // 3)
-                x_ticks = [start_date, t1, t2, end_date]
-            elif delta_days == 2:
-                mid_date = start_date + timedelta(days=1)
-                x_ticks = [start_date, mid_date, end_date]
-            else:
-                x_ticks = [start_date, end_date]
-            
-            interest_chart = alt.Chart(df_log).mark_line(
-                color='#8B5CF6', 
-                strokeWidth=3,
-                point=alt.OverlayMarkDef(color='#8B5CF6', size=40)
-            ).encode(
-                x=alt.X('Tarih:T', title=None, axis=alt.Axis(
-                    values=x_ticks, 
-                    format='%Y-%m-%d', 
-                    labelAngle=0,
-                    grid=True
-                )),
-                y=alt.Y('daily_interest:Q', title=None, scale=alt.Scale(domain=[nice_min, nice_max]), axis=alt.Axis(
-                    values=y_ticks,
-                    format=',.2f'
-                ))
-            ).properties(
-                height=300
-            ).configure_view(
-                strokeWidth=0
-            )
-            st.altair_chart(interest_chart, use_container_width=True)
-        else:
-            st.info("Kasa zaman serisini çizmek için yeterli veri bulunamadı. Lütfen bir gelir/gider işlemi ekleyin.")
+            if 'dash_tx_page' not in st.session_state:
+                st.session_state.dash_tx_page = 0
 
-    st.markdown("---")
-    render_category_analytics(recent_txs, get_categories())
+            page_size = 5
+            total_txs = len(recent_txs)
+            total_pages = (total_txs + page_size - 1) // page_size
+            if st.session_state.dash_tx_page >= total_pages:
+                st.session_state.dash_tx_page = total_pages - 1
+            if st.session_state.dash_tx_page < 0:
+                st.session_state.dash_tx_page = 0
 
-    st.markdown("---")
-    render_export_and_reports(
-        transactions=recent_txs,
-        debts=all_debts_db,
-        current_vault=current_vault,
-        total_interest_earned=total_interest_earned,
-        accumulated_interest=accumulated_interest,
-        monthly_flow=m_flow,
-    )
+            current_page = st.session_state.dash_tx_page
+            start_idx = current_page * page_size
+            end_idx = start_idx + page_size
 
+            for tx in recent_txs[start_idx:end_idx]:
+                sign = "+" if tx['type'] == 'Gelir' else "-"
+                amt_color = "#10B981" if tx['type'] == 'Gelir' else "#EF4444"
+                st.markdown(render_tx_row_html(tx, sign, amt_color), unsafe_allow_html=True)
 
-elif menu_selection == "📝 İşlem Ekle/Düzenle":
-    categories = get_categories()
-    edit_tx_id = st.session_state.get('edit_tx_id')
-    show_tx_form = st.session_state.get('show_new_tx_form', False) or bool(edit_tx_id)
+            if total_pages > 1:
+                p_col1, p_col2, p_col3, p_col4, p_col5 = st.columns([4, 1, 2, 1, 4])
+                with p_col2:
+                    if st.button("◀️", key="prev_dash_tx", disabled=(current_page == 0)):
+                        st.session_state.dash_tx_page -= 1
+                        st.rerun()
+                with p_col3:
+                    st.markdown(
+                        f"<div style='text-align: center; font-weight: 600; font-size: 0.9rem; padding-top: 6px; white-space: nowrap;'>Sayfa {current_page + 1} / {total_pages}</div>",
+                        unsafe_allow_html=True,
+                    )
+                with p_col4:
+                    if st.button("▶️", key="next_dash_tx", disabled=(current_page == total_pages - 1)):
+                        st.session_state.dash_tx_page += 1
+                        st.rerun()
 
-    hdr_c1, hdr_c2 = st.columns([3, 1])
-    hdr_c1.title("📝 İşlemler")
-    if not edit_tx_id:
-        if hdr_c2.button("✖️ Formu Kapat" if show_tx_form else "➕ Yeni İşlem Ekle", type="secondary" if show_tx_form else "primary", use_container_width=True, key="toggle_tx_form_btn"):
-            st.session_state['show_new_tx_form'] = not show_tx_form
-            st.rerun()
+    with tab_cat_dist:
+        render_category_analytics(recent_txs, get_categories())
 
-    if not categories:
-        st.warning("⚠️ İşlem eklemeden önce en az bir kategori oluşturmalısınız! Lütfen 'Kategori Yönetimi' sayfasına gidin.")
-    elif show_tx_form:
-        edit_tx = None
-        if edit_tx_id:
-            if is_using_supabase():
-                client = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
-                data = client._get("ory_transactions", params={
-                    "select": "id,date,category_id,amount,description,time_range,categories:ory_categories(type)",
-                    "id": f"eq.{edit_tx_id}"
-                })
-                if data:
-                    row = data[0]
-                    edit_tx = {
-                        "id": row["id"],
-                        "date": row["date"],
-                        "category_id": row["category_id"],
-                        "amount": row["amount"],
-                        "description": row["description"],
-                        "time_range": row["time_range"],
-                        "type": row["categories"]["type"] if row.get("categories") else None
-                    }
-            else:
-                conn = get_connection()
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT t.id, t.date, t.category_id, t.amount, t.description, t.time_range, c.type
-                    FROM transactions t
-                    JOIN categories c ON t.category_id = c.id
-                    WHERE t.id = ?
-                """, (edit_tx_id,))
-                row = cursor.fetchone()
-                conn.close()
-                if row:
-                    edit_tx = dict(row)
+    with tab_charts:
+        col_chart1, col_chart2 = st.columns(2)
+        with col_chart1:
+            st.markdown("#### 📈 Kasa Bakiyesi Zaman Serisi")
+            if daily_log:
+                df_log = pd.DataFrame(daily_log)
+                df_log['Tarih'] = pd.to_datetime(df_log['date'])
+                df_log = df_log.rename(columns={'vault_after_interest': 'vault_balance', 'interest_earned': 'daily_interest'})
 
-        if edit_tx:
-            st.markdown(f"### ✏️ İşlemi Düzenle (ID: #{edit_tx['id']})")
-            try:
-                parsed_date = datetime.strptime(edit_tx['date'], '%Y-%m-%d').date()
-            except Exception:
-                parsed_date = today_date
+                min_val = df_log['vault_balance'].min()
+                max_val = df_log['vault_balance'].max()
+                nice_min, nice_max, step = get_nice_limits(min_val, max_val)
+                y_ticks = []
+                curr = nice_min
+                while curr <= nice_max + (step * 0.01):
+                    y_ticks.append(curr)
+                    curr += step
 
-            radio_options = ["Gider", "Gelir"]
-            default_radio_idx = radio_options.index(edit_tx['type']) if edit_tx['type'] in radio_options else 0
-            tx_type = st.radio("İşlem Türü", radio_options, index=default_radio_idx, horizontal=True, key="edit_tx_type")
-            filtered_cats = [c for c in categories if c['type'] == tx_type]
-
-            with st.form("edit_transaction_form", clear_on_submit=False):
-                col_date, col_time, col_amount = st.columns([3, 4, 3])
-                with col_date:
-                    tx_date = st.date_input("Tarih", parsed_date, max_value=today_date, key="edit_tx_date")
-                with col_time:
-                    time_options = {
-                        '05:00 - 18:15': '05:00 - 18:15 (Gün İçi - Bugün)',
-                        '18:15 - 23:59': '18:15 - 23:59 (Akşam - Yarın)',
-                        '00:00 - 05:00': '00:00 - 05:00 (Gece - Bugün)'
-                    }
-                    opt_keys = list(time_options.keys())
-                    default_time_idx = opt_keys.index(edit_tx['time_range']) if edit_tx['time_range'] in opt_keys else 0
-                    tx_time = st.selectbox("Saat Aralığı", options=opt_keys, format_func=lambda x: time_options[x], index=default_time_idx, key="edit_tx_time")
-                with col_amount:
-                    tx_amount_str = st.text_input("Miktar (TL)", value=format_turkish_amount(edit_tx['amount']), key="edit_tx_amount")
-
-                col_cat, col_desc = st.columns([1, 2])
-                with col_cat:
-                    if filtered_cats:
-                        cat_options = {c['id']: f"{c['emoji']} {c['name']}" for c in filtered_cats}
-                        cat_ids = list(cat_options.keys())
-                        try:
-                            default_cat_idx = cat_ids.index(edit_tx['category_id'])
-                        except ValueError:
-                            default_cat_idx = 0
-                        selected_cat_id = st.selectbox("Kategori", options=cat_ids, format_func=lambda x: cat_options[x], index=default_cat_idx, key="edit_tx_category")
-                    else:
-                        st.error(f"Seçilen türde ({tx_type}) kategori bulunamadı.")
-                        selected_cat_id = None
-                with col_desc:
-                    tx_desc = st.text_input("Açıklama / Detay", value=edit_tx['description'] or "", key="edit_tx_desc")
-
-                submitted = st.form_submit_button("Değişiklikleri Kaydet", type="primary")
-            canceled = st.button("İptal Et / Kapat", key="cancel_edit_btn")
-
-            if submitted:
-                tx_amount = parse_turkish_amount(tx_amount_str)
-                if tx_amount is None or tx_amount <= 0:
-                    st.error("Lütfen geçerli bir miktar girin (Örn: 1.000,50)")
-                elif selected_cat_id is None:
-                    st.error("Kategori seçimi zorunludur.")
+                start_date = df_log['Tarih'].min()
+                end_date = df_log['Tarih'].max()
+                delta_days = (end_date - start_date).days
+                if delta_days >= 3:
+                    x_ticks = [start_date, start_date + timedelta(days=delta_days // 3), start_date + timedelta(days=(2 * delta_days) // 3), end_date]
+                elif delta_days == 2:
+                    x_ticks = [start_date, start_date + timedelta(days=1), end_date]
                 else:
-                    date_str = tx_date.strftime('%Y-%m-%d')
-                    update_transaction(edit_tx['id'], date_str, selected_cat_id, tx_amount, tx_desc, tx_time)
+                    x_ticks = [start_date, end_date]
+
+                line_chart = alt.Chart(df_log).mark_line(
+                    color='#3B82F6',
+                    strokeWidth=3,
+                    point=alt.OverlayMarkDef(color='#3B82F6', size=40),
+                ).encode(
+                    x=alt.X('Tarih:T', title=None, axis=alt.Axis(values=x_ticks, format='%Y-%m-%d', labelAngle=0, grid=True)),
+                    y=alt.Y('vault_balance:Q', title=None, scale=alt.Scale(domain=[nice_min, nice_max]), axis=alt.Axis(values=y_ticks, format=',.0f')),
+                ).properties(height=300).configure_view(strokeWidth=0)
+                st.altair_chart(line_chart, use_container_width=True)
+            else:
+                st.info("Kasa zaman serisini çizmek için yeterli veri bulunamadı.")
+
+        with col_chart2:
+            st.markdown("#### 💸 Günlük Faiz Getirisi")
+            if daily_log:
+                df_log = pd.DataFrame(daily_log)
+                df_log['Tarih'] = pd.to_datetime(df_log['date'])
+                df_log = df_log.rename(columns={'vault_after_interest': 'vault_balance', 'interest_earned': 'daily_interest'})
+
+                min_val = df_log['daily_interest'].min()
+                max_val = df_log['daily_interest'].max()
+                nice_min, nice_max, step = get_nice_limits(min_val, max_val)
+                y_ticks = []
+                curr = nice_min
+                while curr <= nice_max + (step * 0.01):
+                    y_ticks.append(curr)
+                    curr += step
+
+                start_date = df_log['Tarih'].min()
+                end_date = df_log['Tarih'].max()
+                delta_days = (end_date - start_date).days
+                if delta_days >= 3:
+                    x_ticks = [start_date, start_date + timedelta(days=delta_days // 3), start_date + timedelta(days=(2 * delta_days) // 3), end_date]
+                elif delta_days == 2:
+                    x_ticks = [start_date, start_date + timedelta(days=1), end_date]
+                else:
+                    x_ticks = [start_date, end_date]
+
+                interest_chart = alt.Chart(df_log).mark_line(
+                    color='#8B5CF6',
+                    strokeWidth=3,
+                    point=alt.OverlayMarkDef(color='#8B5CF6', size=40),
+                ).encode(
+                    x=alt.X('Tarih:T', title=None, axis=alt.Axis(values=x_ticks, format='%Y-%m-%d', labelAngle=0, grid=True)),
+                    y=alt.Y('daily_interest:Q', title=None, scale=alt.Scale(domain=[nice_min, nice_max]), axis=alt.Axis(values=y_ticks, format=',.2f')),
+                ).properties(height=300).configure_view(strokeWidth=0)
+                st.altair_chart(interest_chart, use_container_width=True)
+            else:
+                st.info("Günlük faiz grafiği için yeterli veri bulunamadı.")
+
+
+elif menu_selection == "🏕️ Kademe & Ödemeler":
+    st.title("🏕️ Kademe & Ödemeler")
+    _fee_store = FeeStore(
+        is_using_supabase(),
+        SupabaseClient(SUPABASE_URL, SUPABASE_KEY) if is_using_supabase() else None,
+        DB_PATH,
+    )
+    render_fees_page(_fee_store, get_categories(), invalidate_cache, today_date, default_tab="odeme", transactions=get_transactions())
+
+
+elif menu_selection == "💸 İşlemler":
+    st.title("💸 İşlemler & Kategoriler")
+    categories = get_categories()
+    tab_tx_hist, tab_cats = st.tabs(["📋 İşlem Geçmişi", f"🏷️ Kategoriler ({len(categories)})"])
+
+    with tab_tx_hist:
+        edit_tx_id = st.session_state.get('edit_tx_id')
+        show_tx_form = st.session_state.get('show_new_tx_form', False) or bool(edit_tx_id)
+
+        tx_h1, tx_h2 = st.columns([3, 1])
+        tx_h1.markdown("### 📋 İşlem Geçmişi")
+        if not edit_tx_id:
+            if tx_h2.button("✖️ Formu Kapat" if show_tx_form else "➕ Yeni İşlem Ekle", type="secondary" if show_tx_form else "primary", use_container_width=True, key="toggle_tx_form_btn"):
+                st.session_state['show_new_tx_form'] = not show_tx_form
+                st.rerun()
+
+        if not categories:
+            st.warning("⚠️ İşlem eklemeden önce **🏷️ Kategoriler** sekmesinden en az bir kategori oluşturmalısınız.")
+        elif show_tx_form:
+            edit_tx = None
+            if edit_tx_id:
+                if is_using_supabase():
+                    client = SupabaseClient(SUPABASE_URL, SUPABASE_KEY)
+                    data = client._get("ory_transactions", params={
+                        "select": "id,date,category_id,amount,description,time_range,categories:ory_categories(type)",
+                        "id": f"eq.{edit_tx_id}"
+                    })
+                    if data:
+                        row = data[0]
+                        edit_tx = {
+                            "id": row["id"],
+                            "date": row["date"],
+                            "category_id": row["category_id"],
+                            "amount": row["amount"],
+                            "description": row["description"],
+                            "time_range": row["time_range"],
+                            "type": row["categories"]["type"] if row.get("categories") else None,
+                        }
+                else:
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT t.id, t.date, t.category_id, t.amount, t.description, t.time_range, c.type
+                        FROM transactions t
+                        JOIN categories c ON t.category_id = c.id
+                        WHERE t.id = ?
+                    """, (edit_tx_id,))
+                    row = cursor.fetchone()
+                    conn.close()
+                    if row:
+                        edit_tx = dict(row)
+
+            if edit_tx:
+                st.markdown(f"#### ✏️ İşlemi Düzenle (ID: #{edit_tx['id']})")
+                try:
+                    parsed_date = datetime.strptime(edit_tx['date'], '%Y-%m-%d').date()
+                except Exception:
+                    parsed_date = today_date
+
+                radio_options = ["Gider", "Gelir"]
+                default_radio_idx = radio_options.index(edit_tx['type']) if edit_tx['type'] in radio_options else 0
+                tx_type = st.radio("İşlem Türü", radio_options, index=default_radio_idx, horizontal=True, key="edit_tx_type")
+                filtered_cats = [c for c in categories if c['type'] == tx_type]
+
+                with st.form("edit_transaction_form", clear_on_submit=False):
+                    col_date, col_time, col_amount = st.columns([3, 4, 3])
+                    with col_date:
+                        tx_date = st.date_input("Tarih", parsed_date, max_value=today_date, key="edit_tx_date")
+                    with col_time:
+                        time_options = {
+                            '05:00 - 18:15': '05:00 - 18:15 (Gün İçi - Bugün)',
+                            '18:15 - 23:59': '18:15 - 23:59 (Akşam - Yarın)',
+                            '00:00 - 05:00': '00:00 - 05:00 (Gece - Bugün)',
+                        }
+                        opt_keys = list(time_options.keys())
+                        default_time_idx = opt_keys.index(edit_tx['time_range']) if edit_tx['time_range'] in opt_keys else 0
+                        tx_time = st.selectbox("Saat Aralığı", options=opt_keys, format_func=lambda x: time_options[x], index=default_time_idx, key="edit_tx_time")
+                    with col_amount:
+                        tx_amount_str = st.text_input("Miktar (TL)", value=format_turkish_amount(edit_tx['amount']), key="edit_tx_amount")
+
+                    col_cat, col_desc = st.columns([1, 2])
+                    with col_cat:
+                        if filtered_cats:
+                            cat_options = {c['id']: f"{c['emoji']} {c['name']}" for c in filtered_cats}
+                            cat_ids = list(cat_options.keys())
+                            try:
+                                default_cat_idx = cat_ids.index(edit_tx['category_id'])
+                            except ValueError:
+                                default_cat_idx = 0
+                            selected_cat_id = st.selectbox("Kategori", options=cat_ids, format_func=lambda x: cat_options[x], index=default_cat_idx, key="edit_tx_category")
+                        else:
+                            st.error(f"Seçilen türde ({tx_type}) kategori bulunamadı.")
+                            selected_cat_id = None
+                    with col_desc:
+                        tx_desc = st.text_input("Açıklama / Detay", value=edit_tx['description'] or "", key="edit_tx_desc")
+
+                    submitted = st.form_submit_button("Değişiklikleri Kaydet", type="primary")
+                canceled = st.button("İptal Et / Kapat", key="cancel_edit_btn")
+
+                if submitted:
+                    tx_amount = parse_turkish_amount(tx_amount_str)
+                    if tx_amount is None or tx_amount <= 0:
+                        st.error("Lütfen geçerli bir miktar girin (Örn: 1.000,50)")
+                    elif selected_cat_id is None:
+                        st.error("Kategori seçimi zorunludur.")
+                    else:
+                        date_str = tx_date.strftime('%Y-%m-%d')
+                        update_transaction(edit_tx['id'], date_str, selected_cat_id, tx_amount, tx_desc, tx_time)
+                        st.session_state.edit_tx_id = None
+                        st.session_state.show_new_tx_form = False
+                        st.toast("İşlem başarıyla güncellendi!", icon="✏️")
+                        st.rerun()
+                if canceled:
                     st.session_state.edit_tx_id = None
                     st.session_state.show_new_tx_form = False
-                    st.toast("İşlem başarıyla güncellendi!", icon="✏️")
                     st.rerun()
-            if canceled:
-                st.session_state.edit_tx_id = None
-                st.session_state.show_new_tx_form = False
-                st.rerun()
-        else:
-            st.markdown("### ➕ Yeni İşlem Kaydet")
-            tx_type = st.radio("İşlem Türü", ["Gider", "Gelir"], index=0, horizontal=True)
-            filtered_cats = [c for c in categories if c['type'] == tx_type] if tx_type else []
-
-            with st.form("new_transaction_form", clear_on_submit=True):
-                col_date, col_time, col_amount = st.columns([3, 4, 3])
-                with col_date:
-                    tx_date = st.date_input("Tarih", today_date, max_value=today_date)
-                with col_time:
-                    time_options = {
-                        '05:00 - 18:15': '05:00 - 18:15 (Gün İçi - Bugün)',
-                        '18:15 - 23:59': '18:15 - 23:59 (Akşam - Yarın)',
-                        '00:00 - 05:00': '00:00 - 05:00 (Gece - Bugün)'
-                    }
-                    tx_time = st.selectbox("Saat Aralığı", options=list(time_options.keys()), format_func=lambda x: time_options[x], index=0)
-                with col_amount:
-                    tx_amount_str = st.text_input("Miktar (TL)", value="", key="new_tx_amount")
-
-                col_cat, col_desc = st.columns([1, 2])
-                with col_cat:
-                    if filtered_cats:
-                        cat_options = {c['id']: f"{c['emoji']} {c['name']}" for c in filtered_cats}
-                        selected_cat_id = st.selectbox("Kategori", options=list(cat_options.keys()), format_func=lambda x: cat_options[x])
-                    else:
-                        st.error(f"Seçilen türde ({tx_type}) kategori bulunamadı.")
-                        selected_cat_id = None
-                with col_desc:
-                    tx_desc = st.text_input("Açıklama / Detay")
-
-                submitted = st.form_submit_button("✅ İşlemi Kaydet", type="primary")
-
-            if submitted:
-                tx_amount = parse_turkish_amount(tx_amount_str)
-                if tx_amount is None or tx_amount <= 0:
-                    st.error("Lütfen geçerli bir miktar girin (Örn: 1.000,50)")
-                elif selected_cat_id is None:
-                    st.error("Kategori seçimi zorunludur.")
-                else:
-                    date_str = tx_date.strftime('%Y-%m-%d')
-                    add_transaction(date_str, selected_cat_id, tx_amount, tx_desc, time_range=tx_time)
-                    st.session_state.show_new_tx_form = False
-                    st.toast("İşlem başarıyla eklendi!", icon="✅")
-                    st.rerun()
-        st.markdown("---")
-
-    # Transaction List (Always front and center)
-    all_txs = get_transactions()
-    if not all_txs:
-        st.info("İşlem geçmişiniz henüz boş. Sağ üstteki **➕ Yeni İşlem Ekle** butonuna basarak ilk işleminizi ekleyebilirsiniz.")
-    else:
-        search_query = st.text_input("🔍 Açıklama, kategori veya tarih ara...", "").lower()
-
-        if st.session_state.get('confirm_delete_id'):
-            del_id = st.session_state.confirm_delete_id
-            del_tx = next((t for t in all_txs if t['id'] == del_id), None)
-            if del_tx:
-                st.warning(f"⚠️ **Seçilen işlemi silmek istediğinize emin misiniz?**\n\n**{del_tx['date']} | {del_tx['emoji']} {del_tx['category_name']} | {del_tx['description'] or ''} | {del_tx['amount']:,.2f} TL**")
-                col_yes, col_no = st.columns([1, 1])
-                with col_yes:
-                    if st.button("Evet, Sil", key="btn_confirm_del_yes", type="primary"):
-                        delete_transaction(del_id)
-                        if st.session_state.get('edit_tx_id') == del_id:
-                            st.session_state.edit_tx_id = None
-                        st.session_state.confirm_delete_id = None
-                        st.toast("İşlem silindi.", icon="🗑️")
-                        st.rerun()
-                with col_no:
-                    if st.button("İptal Et", key="btn_confirm_del_no"):
-                        st.session_state.confirm_delete_id = None
-                        st.rerun()
             else:
-                st.session_state.confirm_delete_id = None
+                st.markdown("#### ➕ Yeni İşlem Kaydet")
+                tx_type = st.radio("İşlem Türü", ["Gider", "Gelir"], index=0, horizontal=True, key="new_tx_type_radio")
+                filtered_cats = [c for c in categories if c['type'] == tx_type] if tx_type else []
 
-        filtered_txs = [
-            tx for tx in all_txs
-            if search_query in (tx['description'] or '').lower()
-            or search_query in (tx['category_name'] or '').lower()
-            or search_query in tx['date']
-        ]
+                _kademe_choices = {0: "Yok (Genel İşlem)"}
+                _kademe_clean_names = {}
+                try:
+                    _fs_tx = FeeStore(
+                        is_using_supabase(),
+                        SupabaseClient(SUPABASE_URL, SUPABASE_KEY) if is_using_supabase() else None,
+                        DB_PATH,
+                    )
+                    _ok_fs, _ = _fs_tx.ensure()
+                    if _ok_fs:
+                        for _k in _fs_tx.kademeler():
+                            _kademe_choices[_k["id"]] = f"🏕️ {_k['name']}"
+                            _kademe_clean_names[_k["id"]] = _k["name"]
+                except Exception:
+                    pass
 
-        if not filtered_txs:
-            st.info("Aramanıza uygun işlem bulunamadı.")
+                with st.form("new_transaction_form", clear_on_submit=True):
+                    col_date, col_time, col_amount = st.columns([3, 4, 3])
+                    with col_date:
+                        tx_date = st.date_input("Tarih", today_date, max_value=today_date)
+                    with col_time:
+                        time_options = {
+                            '05:00 - 18:15': '05:00 - 18:15 (Gün İçi - Bugün)',
+                            '18:15 - 23:59': '18:15 - 23:59 (Akşam - Yarın)',
+                            '00:00 - 05:00': '00:00 - 05:00 (Gece - Bugün)',
+                        }
+                        tx_time = st.selectbox("Saat Aralığı", options=list(time_options.keys()), format_func=lambda x: time_options[x], index=0)
+                    with col_amount:
+                        tx_amount_str = st.text_input("Miktar (TL)", value="", key="new_tx_amount")
+
+                    col_cat, col_kad, col_desc = st.columns([1.2, 1.2, 2])
+                    with col_cat:
+                        if filtered_cats:
+                            cat_options = {c['id']: f"{c['emoji']} {c['name']}" for c in filtered_cats}
+                            selected_cat_id = st.selectbox("Kategori", options=list(cat_options.keys()), format_func=lambda x: cat_options[x])
+                        else:
+                            st.error(f"Seçilen türde ({tx_type}) kategori bulunamadı.")
+                            selected_cat_id = None
+                    with col_kad:
+                        sel_tx_kademe = st.selectbox(
+                            "🏕️ İlgili Kademe (İsteğe Bağlı)",
+                            options=list(_kademe_choices.keys()),
+                            format_func=lambda kid: _kademe_choices[kid],
+                            key="new_tx_kademe",
+                        )
+                    with col_desc:
+                        tx_desc = st.text_input("Açıklama / Detay")
+
+                    submitted = st.form_submit_button("✅ İşlemi Kaydet", type="primary")
+
+                if submitted:
+                    tx_amount = parse_turkish_amount(tx_amount_str)
+                    if tx_amount is None or tx_amount <= 0:
+                        st.error("Lütfen geçerli bir miktar girin (Örn: 1.000,50)")
+                    elif selected_cat_id is None:
+                        st.error("Kategori seçimi zorunludur.")
+                    else:
+                        final_desc = (tx_desc or "").strip()
+                        if sel_tx_kademe and sel_tx_kademe in _kademe_clean_names:
+                            k_prefix = f"[{_kademe_clean_names[sel_tx_kademe]}]"
+                            if not final_desc.startswith(k_prefix):
+                                final_desc = f"{k_prefix} {final_desc}".strip()
+                        date_str = tx_date.strftime('%Y-%m-%d')
+                        add_transaction(date_str, selected_cat_id, tx_amount, final_desc, time_range=tx_time)
+                        st.session_state.show_new_tx_form = False
+                        st.toast("İşlem başarıyla eklendi!", icon="✅")
+                        st.rerun()
+            st.markdown("---")
+
+        all_txs = get_transactions()
+        if not all_txs:
+            st.info("İşlem geçmişiniz henüz boş. Sağ üstteki **➕ Yeni İşlem Ekle** butonuna basarak ilk işleminizi ekleyebilirsiniz.")
         else:
-            for tx in filtered_txs:
-                sign = "+" if tx['type'] == 'Gelir' else "-"
-                raw_desc = tx['description'] if tx['description'] else tx['category_name']
-                clean_desc = (raw_desc or "").replace("~", "")
-                desc_len = len(clean_desc)
-                desc_font_size = "0.88rem" if desc_len <= 12 else ("0.80rem" if desc_len <= 18 else ("0.74rem" if desc_len <= 26 else ("0.68rem" if desc_len <= 35 else "0.60rem")))
-                amt_color = "#10B981" if tx['type'] == 'Gelir' else "#EF4444"
-                amt_formatted = f"{sign} {tx['amount']:,.2f} TL"
+            f_c1, f_c2 = st.columns([2, 1])
+            search_query = f_c1.text_input("🔍 Açıklama, kategori veya tarih ara...", "", label_visibility="collapsed", placeholder="🔍 Açıklama, kategori veya tarih ara...").lower()
+            tx_type_flt = f_c2.radio("Tür Filtresi", ["Tümü", "🟢 Gelir", "🔴 Gider"], horizontal=True, label_visibility="collapsed", key="tx_hist_type_flt")
 
-                st.markdown(f"""
+            if st.session_state.get('confirm_delete_id'):
+                del_id = st.session_state.confirm_delete_id
+                del_tx = next((t for t in all_txs if t['id'] == del_id), None)
+                if del_tx:
+                    st.warning(f"⚠️ **Seçilen işlemi silmek istediğinize emin misiniz?**\n\n**{del_tx['date']} | {del_tx['emoji']} {del_tx['category_name']} | {del_tx['description'] or ''} | {del_tx['amount']:,.2f} TL**")
+                    col_yes, col_no = st.columns([1, 1])
+                    with col_yes:
+                        if st.button("Evet, Sil", key="btn_confirm_del_yes", type="primary"):
+                            delete_transaction(del_id)
+                            if st.session_state.get('edit_tx_id') == del_id:
+                                st.session_state.edit_tx_id = None
+                            st.session_state.confirm_delete_id = None
+                            st.toast("İşlem silindi.", icon="🗑️")
+                            st.rerun()
+                    with col_no:
+                        if st.button("İptal Et", key="btn_confirm_del_no"):
+                            st.session_state.confirm_delete_id = None
+                            st.rerun()
+                else:
+                    st.session_state.confirm_delete_id = None
+
+            filtered_txs = [
+                tx for tx in all_txs
+                if (
+                    search_query in (tx['description'] or '').lower()
+                    or search_query in (tx['category_name'] or '').lower()
+                    or search_query in tx['date']
+                )
+                and (
+                    tx_type_flt == "Tümü"
+                    or (tx_type_flt == "🟢 Gelir" and tx['type'] == "Gelir")
+                    or (tx_type_flt == "🔴 Gider" and tx['type'] == "Gider")
+                )
+            ]
+
+            if not filtered_txs:
+                st.info("Aramanıza uygun işlem bulunamadı.")
+            else:
+                if 'tx_hist_page' not in st.session_state:
+                    st.session_state.tx_hist_page = 0
+                tx_page_size = 15
+                tx_total_pages = max(1, (len(filtered_txs) + tx_page_size - 1) // tx_page_size)
+                if st.session_state.tx_hist_page >= tx_total_pages:
+                    st.session_state.tx_hist_page = tx_total_pages - 1
+                if st.session_state.tx_hist_page < 0:
+                    st.session_state.tx_hist_page = 0
+                tx_curr_page = st.session_state.tx_hist_page
+                tx_slice = filtered_txs[tx_curr_page * tx_page_size : (tx_curr_page + 1) * tx_page_size]
+
+                # Single shared CSS block for transaction expanders
+                st.markdown("""
                 <style>
-                div[data-testid="stExpander"]:has(#tx-id-{tx['id']}) > details > summary {{
-                    padding-right: 125px !important;
+                div[data-testid="stExpander"]:has(.tx-exp-marker) > details > summary {
+                    padding-right: 135px !important;
                     position: relative !important;
-                }}
-                div[data-testid="stExpander"]:has(#tx-id-{tx['id']}) > details > summary em {{
-                    background-color: {tx['color']}15 !important;
-                    color: {tx['color']} !important;
-                    border: 1px solid {tx['color']}30 !important;
+                }
+                div[data-testid="stExpander"]:has(.tx-exp-marker) > details > summary em {
+                    background-color: rgba(59, 130, 246, 0.12) !important;
+                    color: #60A5FA !important;
+                    border: 1px solid rgba(59, 130, 246, 0.28) !important;
                     font-style: normal !important;
                     padding: 2px 8px !important;
                     border-radius: 8px !important;
@@ -2901,23 +2754,22 @@ elif menu_selection == "📝 İşlem Ekle/Düzenle":
                     gap: 4px !important;
                     white-space: nowrap !important;
                     margin-right: 6px !important;
-                }}
-                div[data-testid="stExpander"]:has(#tx-id-{tx['id']}) > details > summary del {{
+                }
+                div[data-testid="stExpander"]:has(.tx-exp-marker) > details > summary del {
                     text-decoration: none !important;
                     white-space: nowrap !important;
-                    font-size: {desc_font_size} !important;
+                    font-size: 0.82rem !important;
                     font-weight: 600 !important;
                     color: inherit !important;
-                }}
-                div[data-testid="stExpander"]:has(#tx-id-{tx['id']}) > details > summary strong {{
-                    color: {amt_color} !important;
+                }
+                div[data-testid="stExpander"]:has(.tx-exp-marker) > details > summary strong {
                     position: absolute !important;
                     right: 14px !important;
                     top: 8px !important;
-                    font-size: 0.90rem !important;
+                    font-size: 0.88rem !important;
                     font-weight: 700 !important;
-                }}
-                div[data-testid="stExpander"]:has(#tx-id-{tx['id']}) > details > summary code {{
+                }
+                div[data-testid="stExpander"]:has(.tx-exp-marker) > details > summary code {
                     position: absolute !important;
                     right: 14px !important;
                     bottom: 8px !important;
@@ -2929,173 +2781,178 @@ elif menu_selection == "📝 İşlem Ekle/Düzenle":
                     font-size: 0.7rem !important;
                     font-weight: 400 !important;
                     font-family: inherit !important;
+                }
+                </style>
+                """, unsafe_allow_html=True)
+
+                for tx in tx_slice:
+                    sign = "+" if tx['type'] == 'Gelir' else "-"
+                    dot = "🟢" if tx['type'] == 'Gelir' else "🔴"
+                    raw_desc = tx['description'] if tx['description'] else tx['category_name']
+                    clean_desc = (raw_desc or "").replace("~", "")
+                    amt_formatted = f"{dot} {sign} {tx['amount']:,.2f} TL"
+                    cat_prefix = f"_{tx['emoji']} {tx['category_name']}_ · " if tx['category_name'] else ""
+                    exp_title = f"{cat_prefix}~~{clean_desc}~~ **{amt_formatted}** `{tx['date']}`"
+
+                    with st.expander(exp_title, expanded=False):
+                        st.markdown(f'<span class="tx-exp-marker" id="tx-id-{tx["id"]}"></span>', unsafe_allow_html=True)
+                        tx_type_lbl = "🟢 Gelir" if tx['type'] == 'Gelir' else "🔴 Gider"
+                        time_lbl = f" | 🕒 Saat: {tx['time_range']}" if tx.get('time_range') else " | 🕒 Saat: Belirsiz"
+                        st.markdown(f"<div style='font-size: 0.82rem; color: #94A3B8; margin-bottom: 10px;'>{tx_type_lbl}{time_lbl}</div>", unsafe_allow_html=True)
+                        c_edit, c_del = st.columns(2)
+                        with c_edit:
+                            if st.button("✏️ Düzenle", key=f"edit_tx_btn_{tx['id']}", use_container_width=True):
+                                st.session_state.edit_tx_id = tx['id']
+                                st.rerun()
+                        with c_del:
+                            if st.button("🗑️ Sil", key=f"del_tx_btn_{tx['id']}", use_container_width=True):
+                                st.session_state.confirm_delete_id = tx['id']
+                                st.rerun()
+
+                if tx_total_pages > 1:
+                    tp1, tp2, tp3, tp4, tp5 = st.columns([4, 1, 2, 1, 4])
+                    with tp2:
+                        if st.button("◀️", key="prev_tx_hist", disabled=(tx_curr_page == 0)):
+                            st.session_state.tx_hist_page -= 1
+                            st.rerun()
+                    with tp3:
+                        st.markdown(f"<div style='text-align: center; font-weight: 600; font-size: 0.88rem; padding-top: 6px;'>Sayfa {tx_curr_page + 1} / {tx_total_pages} ({len(filtered_txs)} işlem)</div>", unsafe_allow_html=True)
+                    with tp4:
+                        if st.button("▶️", key="next_tx_hist", disabled=(tx_curr_page == tx_total_pages - 1)):
+                            st.session_state.tx_hist_page += 1
+                            st.rerun()
+
+    with tab_cats:
+        edit_cat_id = st.session_state.get('edit_cat_id')
+        show_cat_form = st.session_state.get('show_new_cat_form', False) or bool(edit_cat_id)
+
+        cat_h1, cat_h2 = st.columns([3, 1])
+        cat_h1.markdown(f"### 🏷️ Kategoriler ({len(categories)})")
+        if not edit_cat_id:
+            if cat_h2.button("✖️ Formu Kapat" if show_cat_form else "➕ Yeni Kategori Ekle", type="secondary" if show_cat_form else "primary", use_container_width=True, key="toggle_cat_form_btn"):
+                st.session_state['show_new_cat_form'] = not show_cat_form
+                st.rerun()
+
+        if show_cat_form:
+            edit_cat = next((c for c in categories if c['id'] == edit_cat_id), None) if edit_cat_id else None
+            emoji_options = [
+                "🧭", "🏃", "🗺️", "👟", "🏆", "🎓",
+                "🌲", "🏕️", "🪵", "🎒", "🩹", "🏥",
+                "🍕", "🥤", "🍽️", "👕", "🏠", "🚗",
+                "🪙", "💰", "💵", "💳", "🤝", "🛒",
+                "✈️", "🍿", "🎮", "🐾", "🎁", "🛠️",
+            ]
+            if edit_cat:
+                st.markdown(f"#### ✏️ Kategoriyi Düzenle: {edit_cat['emoji']} {edit_cat['name']}")
+                with st.form("edit_category_form", clear_on_submit=False):
+                    cat_name = st.text_input("Kategori Adı", value=edit_cat['name'], key="edit_cat_name")
+                    ec1, ec2, ec3 = st.columns([2, 1, 1])
+                    cat_type = ec1.radio("Kategori Türü", ["Gider", "Gelir"], index=0 if edit_cat['type'] == 'Gider' else 1, horizontal=True, key="edit_cat_type")
+                    cat_color = ec2.color_picker("Kategori Rengi", value=edit_cat['color'], key="edit_cat_color_picker")
+                    default_emoji_idx = emoji_options.index(edit_cat['emoji']) if edit_cat['emoji'] in emoji_options else 0
+                    selected_emoji = ec3.selectbox("Kategori Simgesi", options=emoji_options, index=default_emoji_idx, key="edit_cat_emoji_select")
+                    submitted = st.form_submit_button("Değişiklikleri Kaydet", type="primary")
+                canceled = st.button("İptal Et", key="cancel_edit_cat_btn")
+
+                if submitted:
+                    if not cat_name.strip():
+                        st.error("Kategori adı boş olamaz!")
+                    else:
+                        update_category(edit_cat['id'], cat_name.strip(), selected_emoji, cat_color, cat_type)
+                        st.session_state.edit_cat_id = None
+                        st.session_state.show_new_cat_form = False
+                        st.toast("Kategori güncellendi!", icon="✏️")
+                        st.rerun()
+                if canceled:
+                    st.session_state.edit_cat_id = None
+                    st.session_state.show_new_cat_form = False
+                    st.rerun()
+            else:
+                st.markdown("#### ➕ Yeni Kategori Oluştur")
+                with st.form("new_category_form", clear_on_submit=True):
+                    cat_name = st.text_input("Kategori Adı", placeholder="Örn: Aidat, Ulaşım, Kamp", key="new_cat_name")
+                    nc1, nc2, nc3 = st.columns([2, 1, 1])
+                    cat_type = nc1.radio("Kategori Türü", ["Gider", "Gelir"], index=0, horizontal=True, key="new_cat_type")
+                    cat_color = nc2.color_picker("Kategori Rengi", value="#EF4444", key="new_cat_color_picker")
+                    selected_emoji = nc3.selectbox("Kategori Simgesi", options=emoji_options, index=0, key="new_cat_emoji_select")
+                    submitted = st.form_submit_button("✅ Kategoriyi Ekle", type="primary", key="add_cat_btn")
+
+                if submitted:
+                    if not cat_name.strip():
+                        st.error("Kategori adı boş olamaz!")
+                    else:
+                        add_category(cat_name.strip(), selected_emoji, cat_color, cat_type)
+                        st.session_state.show_new_cat_form = False
+                        st.toast(f"'{selected_emoji} {cat_name}' kategorisi oluşturuldu!", icon="✅")
+                        st.rerun()
+            st.markdown("---")
+
+        if not categories:
+            st.info("Kayıtlı kategori bulunamadı. Sağ üstteki **➕ Yeni Kategori Ekle** butonuna basarak oluşturabilirsiniz.")
+        else:
+            if st.session_state.get('confirm_delete_cat_id'):
+                del_id = st.session_state.confirm_delete_cat_id
+                del_c = next((c for c in categories if c['id'] == del_id), None)
+                if del_c:
+                    st.warning(f"⚠️ **Seçilen kategoriyi silmek istediğinize emin misiniz?**\n\n**Bu kategori silinirse bağlı TÜM işlemler de silinecektir!**\n\nKategori: **{del_c['emoji']} {del_c['name']}**")
+                    col_yes, col_no = st.columns([1, 1])
+                    with col_yes:
+                        if st.button("Evet, Sil", key="btn_confirm_cat_del_yes", type="primary"):
+                            delete_category(del_id)
+                            if st.session_state.get('edit_cat_id') == del_id:
+                                st.session_state.edit_cat_id = None
+                            st.session_state.confirm_delete_cat_id = None
+                            st.toast("Kategori silindi.", icon="🗑️")
+                            st.rerun()
+                    with col_no:
+                        if st.button("İptal Et", key="btn_confirm_cat_del_no"):
+                            st.session_state.confirm_delete_cat_id = None
+                            st.rerun()
+                else:
+                    st.session_state.confirm_delete_cat_id = None
+
+            cat_filter = st.radio("Tür Filtresi", ["Tümü", "🟢 Gelir", "🔴 Gider"], horizontal=True, label_visibility="collapsed", key="cat_list_filter")
+            shown_cats = [
+                c for c in categories
+                if cat_filter == "Tümü"
+                or (cat_filter == "🟢 Gelir" and c['type'] == "Gelir")
+                or (cat_filter == "🔴 Gider" and c['type'] == "Gider")
+            ]
+
+            for c in shown_cats:
+                lbl_color = "#10B981" if c['type'] == "Gelir" else "#EF4444"
+                st.markdown(f"""
+                <style>
+                div[data-testid="stExpander"]:has(#cat-id-{c['id']}) {{
+                    border-left: 5px solid {c['color']} !important;
                 }}
                 </style>
                 """, unsafe_allow_html=True)
 
-                cat_prefix = f"_{tx['emoji']} {tx['category_name']}_ · " if tx['category_name'] else ""
-                exp_title = f"{cat_prefix}~~{clean_desc}~~ **{amt_formatted}** `{tx['date']}`"
+                exp_title = f"{c['emoji']} {c['name']} · **{c['type']}**"
                 with st.expander(exp_title, expanded=False):
-                    st.markdown(f'<div id="tx-id-{tx["id"]}"></div>', unsafe_allow_html=True)
-                    tx_type_lbl = "🟢 Gelir" if tx['type'] == 'Gelir' else "🔴 Gider"
-                    time_lbl = f" | 🕒 Saat: {tx['time_range']}" if tx.get('time_range') else " | 🕒 Saat: Belirsiz"
-                    st.markdown(f"<div style='font-size: 0.82rem; color: #64748B; margin-bottom: 10px;'><span>{tx_type_lbl}{time_lbl}</span></div>", unsafe_allow_html=True)
+                    st.markdown(f'<div id="cat-id-{c["id"]}"></div>', unsafe_allow_html=True)
+                    st.markdown(f"<div style='font-size: 0.82rem; color: #94A3B8; margin-bottom: 10px;'>Tür: <span style='color: {lbl_color}; font-weight: 700;'>{c['type']}</span> | Renk Kodu: <code>{c['color']}</code></div>", unsafe_allow_html=True)
                     c_edit, c_del = st.columns(2)
                     with c_edit:
-                        if st.button("✏️ Düzenle", key=f"edit_tx_btn_{tx['id']}", use_container_width=True):
-                            st.session_state.edit_tx_id = tx['id']
+                        if st.button("✏️ Düzenle", key=f"edit_cat_btn_{c['id']}", use_container_width=True):
+                            st.session_state.edit_cat_id = c['id']
                             st.rerun()
                     with c_del:
-                        if st.button("🗑️ Sil", key=f"del_tx_btn_{tx['id']}", use_container_width=True):
-                            st.session_state.confirm_delete_id = tx['id']
+                        if st.button("🗑️ Sil", key=f"del_cat_{c['id']}", use_container_width=True):
+                            st.session_state.confirm_delete_cat_id = c['id']
                             st.rerun()
 
 
-elif menu_selection == "🏷️ Kategori Yönetimi":
-    cats = get_categories()
-    edit_cat_id = st.session_state.get('edit_cat_id')
-    show_cat_form = st.session_state.get('show_new_cat_form', False) or bool(edit_cat_id)
-
-    hdr_c1, hdr_c2 = st.columns([3, 1])
-    hdr_c1.title(f"🏷️ Kategoriler ({len(cats)})")
-    if not edit_cat_id:
-        if hdr_c2.button("✖️ Formu Kapat" if show_cat_form else "➕ Yeni Kategori Ekle", type="secondary" if show_cat_form else "primary", use_container_width=True, key="toggle_cat_form_btn"):
-            st.session_state['show_new_cat_form'] = not show_cat_form
-            st.rerun()
-
-    if show_cat_form:
-        edit_cat = next((c for c in cats if c['id'] == edit_cat_id), None) if edit_cat_id else None
-        st.markdown('<span class="cat-page-marker"></span>', unsafe_allow_html=True)
-        emoji_options = [
-            "🧭", "🏃", "🗺️", "👟", "🏆", "🎓",
-            "🌲", "🏕️", "🪵", "🎒", "🩹", "🏥",
-            "🍕", "🥤", "🍽️", "👕", "🏠", "🚗",
-            "🪙", "💰", "💵", "💳", "🤝", "🛒",
-            "✈️", "🍿", "🎮", "🐾", "🎁", "🛠️"
-        ]
-        if edit_cat:
-            st.markdown(f"### ✏️ Kategoriyi Düzenle: {edit_cat['emoji']} {edit_cat['name']}")
-            with st.form("edit_category_form", clear_on_submit=False):
-                cat_name = st.text_input("Kategori Adı", value=edit_cat['name'], key="edit_cat_name")
-                cat_type = st.radio("Kategori Türü", ["Gider", "Gelir"], index=0 if edit_cat['type'] == 'Gider' else 1, horizontal=True, key="edit_cat_type")
-                st.markdown('<span class="cat-color-emoji-marker"></span>', unsafe_allow_html=True)
-                col_color, col_emoji = st.columns([1, 2])
-                with col_color:
-                    cat_color = st.color_picker("Kategori Rengi", value=edit_cat['color'], key="edit_cat_color_picker")
-                with col_emoji:
-                    st.markdown("<div style='margin-bottom: 8px; font-weight: 500; font-size: 0.88rem;'>Kategori Simgesi</div>", unsafe_allow_html=True)
-                    st.markdown('<div class="emoji-radio-container">', unsafe_allow_html=True)
-                    default_emoji_idx = emoji_options.index(edit_cat['emoji']) if edit_cat['emoji'] in emoji_options else 0
-                    selected_emoji = st.radio("Kategori Simgesi Radio", options=emoji_options, index=default_emoji_idx, horizontal=True, label_visibility="collapsed", key="edit_cat_emoji_radio")
-                    st.markdown('</div>', unsafe_allow_html=True)
-                submitted = st.form_submit_button("Değişiklikleri Kaydet", type="primary")
-            canceled = st.button("İptal Et", key="cancel_edit_cat_btn")
-
-            if submitted:
-                if not cat_name.strip():
-                    st.error("Kategori adı boş olamaz!")
-                else:
-                    update_category(edit_cat['id'], cat_name.strip(), selected_emoji, cat_color, cat_type)
-                    st.session_state.edit_cat_id = None
-                    st.session_state.show_new_cat_form = False
-                    st.toast("Kategori güncellendi!", icon="✏️")
-                    st.rerun()
-            if canceled:
-                st.session_state.edit_cat_id = None
-                st.session_state.show_new_cat_form = False
-                st.rerun()
-        else:
-            st.markdown("### ➕ Yeni Kategori Oluştur")
-            with st.form("new_category_form", clear_on_submit=True):
-                cat_name = st.text_input("Kategori Adı", placeholder="Örn: Aidat, Ulaşım, Kamp", key="new_cat_name")
-                cat_type = st.radio("Kategori Türü", ["Gider", "Gelir"], index=0, horizontal=True, key="new_cat_type")
-                st.markdown('<span class="cat-color-emoji-marker"></span>', unsafe_allow_html=True)
-                col_color, col_emoji = st.columns([1, 2])
-                with col_color:
-                    cat_color = st.color_picker("Kategori Rengi", value="#EF4444", key="new_cat_color_picker")
-                with col_emoji:
-                    st.markdown("<div style='margin-bottom: 8px; font-weight: 500; font-size: 0.88rem;'>Kategori Simgesi</div>", unsafe_allow_html=True)
-                    st.markdown('<div class="emoji-radio-container">', unsafe_allow_html=True)
-                    selected_emoji = st.radio("Kategori Simgesi Radio", options=emoji_options, index=0, horizontal=True, label_visibility="collapsed", key="new_cat_emoji_radio")
-                    st.markdown('</div>', unsafe_allow_html=True)
-                submitted = st.form_submit_button("✅ Kategoriyi Ekle", type="primary", key="add_cat_btn")
-
-            if submitted:
-                if not cat_name.strip():
-                    st.error("Kategori adı boş olamaz!")
-                else:
-                    add_category(cat_name.strip(), selected_emoji, cat_color, cat_type)
-                    st.session_state.show_new_cat_form = False
-                    st.toast(f"'{selected_emoji} {cat_name}' kategorisi oluşturuldu!", icon="✅")
-                    st.rerun()
-        st.markdown("---")
-
-    if not cats:
-        st.info("Kayıtlı kategori bulunamadı. Sağ üstteki **➕ Yeni Kategori Ekle** butonuna basarak oluşturabilirsiniz.")
-    else:
-        if st.session_state.get('confirm_delete_cat_id'):
-            del_id = st.session_state.confirm_delete_cat_id
-            del_c = next((c for c in cats if c['id'] == del_id), None)
-            if del_c:
-                st.warning(f"⚠️ **Seçilen kategoriyi silmek istediğinize emin misiniz?**\n\n**Bu kategori silinirse bağlı TÜM işlemler de silinecektir!**\n\nKategori: **{del_c['emoji']} {del_c['name']}**")
-                col_yes, col_no = st.columns([1, 1])
-                with col_yes:
-                    if st.button("Evet, Sil", key="btn_confirm_cat_del_yes", type="primary"):
-                        delete_category(del_id)
-                        if st.session_state.get('edit_cat_id') == del_id:
-                            st.session_state.edit_cat_id = None
-                        st.session_state.confirm_delete_cat_id = None
-                        st.toast("Kategori silindi.", icon="🗑️")
-                        st.rerun()
-                with col_no:
-                    if st.button("İptal Et", key="btn_confirm_cat_del_no"):
-                        st.session_state.confirm_delete_cat_id = None
-                        st.rerun()
-            else:
-                st.session_state.confirm_delete_cat_id = None
-
-        cat_filter = st.radio("Tür Filtresi", ["Tümü", "🟢 Gelir", "🔴 Gider"], horizontal=True, label_visibility="collapsed", key="cat_list_filter")
-        shown_cats = [
-            c for c in cats
-            if cat_filter == "Tümü"
-            or (cat_filter == "🟢 Gelir" and c['type'] == "Gelir")
-            or (cat_filter == "🔴 Gider" and c['type'] == "Gider")
-        ]
-
-        for c in shown_cats:
-            lbl_color = "#10B981" if c['type'] == "Gelir" else "#EF4444"
-            st.markdown(f"""
-            <style>
-            div[data-testid="stExpander"]:has(#cat-id-{c['id']}) {{
-                border-left: 5px solid {c['color']} !important;
-                background-color: {c['color']}05 !important;
-            }}
-            </style>
-            """, unsafe_allow_html=True)
-
-            exp_title = f"{c['emoji']} {c['name']} · **{c['type']}**"
-            with st.expander(exp_title, expanded=False):
-                st.markdown(f'<div id="cat-id-{c["id"]}"></div>', unsafe_allow_html=True)
-                st.markdown(f"<div style='font-size: 0.82rem; color: #64748B; margin-bottom: 10px;'>Tür: <span style='color: {lbl_color}; font-weight: 700;'>{c['type']}</span> | Renk Kodu: <code>{c['color']}</code></div>", unsafe_allow_html=True)
-                c_edit, c_del = st.columns(2)
-                with c_edit:
-                    if st.button("✏️ Düzenle", key=f"edit_cat_btn_{c['id']}", use_container_width=True):
-                        st.session_state.edit_cat_id = c['id']
-                        st.rerun()
-                with c_del:
-                    if st.button("🗑️ Sil", key=f"del_cat_{c['id']}", use_container_width=True):
-                        st.session_state.confirm_delete_cat_id = c['id']
-                        st.rerun()
-
-
-elif menu_selection == "🤝 Borç Takip Sistemi":
+elif menu_selection == "🤝 Borç & Alacak":
     all_debts = get_debts()
     pending_debts = [d for d in all_debts if d['status'] == 'Bekliyor']
+    paid_debts = [d for d in all_debts if d['status'] == 'Ödendi']
     edit_debt_id = st.session_state.get('edit_debt_id')
     show_debt_form = st.session_state.get('show_new_debt_form', False) or bool(edit_debt_id)
 
     hdr_c1, hdr_c2 = st.columns([3, 1])
-    hdr_c1.title("🤝 Borç & Alacak Takibi")
+    hdr_c1.title("🤝 Borç & Alacak")
     if not edit_debt_id:
         if hdr_c2.button("✖️ Formu Kapat" if show_debt_form else "➕ Yeni Borç/Alacak Ekle", type="secondary" if show_debt_form else "primary", use_container_width=True, key="toggle_debt_form_btn"):
             st.session_state['show_new_debt_form'] = not show_debt_form
@@ -3117,15 +2974,17 @@ elif menu_selection == "🤝 Borç Takip Sistemi":
             except Exception:
                 pass
 
-    if overdue_receivables or overdue_payables:
-        for d in overdue_payables:
-            diff = d['days_overdue']
-            time_str = "bugün!" if diff == 0 else f"{diff} gün gecikti!"
-            st.error(f"🚨 **Ödeme Gecikmesi (Bizim Ödeyeceğimiz):** **{d['name']}** — **{d['amount']:,.2f} TL** ({time_str})")
-        for d in overdue_receivables:
-            diff = d['days_overdue']
-            time_str = "bugün!" if diff == 0 else f"{diff} gün gecikti!"
-            st.warning(f"⚠️ **Alacak Gecikmesi (Bize Ödenecek):** **{d['name']}** — **{d['amount']:,.2f} TL** ({time_str})")
+    total_overdue = len(overdue_payables) + len(overdue_receivables)
+    if total_overdue > 0:
+        with st.expander(f"🔔 Vadesi Gelen / Geçen {total_overdue} Kayıt", expanded=(total_overdue <= 2)):
+            for d in overdue_payables:
+                diff = d['days_overdue']
+                time_str = "bugün!" if diff == 0 else f"{diff} gün gecikti!"
+                st.error(f"🚨 **Ödeme Gecikmesi (Bizim Ödeyeceğimiz):** **{d['name']}** — **{d['amount']:,.2f} TL** ({time_str})")
+            for d in overdue_receivables:
+                diff = d['days_overdue']
+                time_str = "bugün!" if diff == 0 else f"{diff} gün gecikti!"
+                st.warning(f"⚠️ **Alacak Gecikmesi (Bize Ödenecek):** **{d['name']}** — **{d['amount']:,.2f} TL** ({time_str})")
 
     debt_totals = get_pending_debts_totals()
     total_payable = debt_totals['Verilecek']
@@ -3221,7 +3080,7 @@ elif menu_selection == "🤝 Borç Takip Sistemi":
                 quick_choice = st.selectbox(
                     "👥 Kayıtlı Kişi Havuzundan Seç (İsteğe Bağlı)",
                     options=["➕ Yeni Kişi / Kurum Yaz..."] + known_members_list,
-                    key="quick_member_select_box"
+                    key="quick_member_select_box",
                 )
                 if quick_choice != "➕ Yeni Kişi / Kurum Yaz...":
                     selected_quick_member = quick_choice
@@ -3277,7 +3136,12 @@ elif menu_selection == "🤝 Borç Takip Sistemi":
             else:
                 st.session_state.confirm_delete_debt_id = None
 
-        tab_pending, tab_paid = st.tabs(["⏳ Bekleyen Borçlar", "✅ Ödenmiş Borçlar"])
+        tab_pending, tab_paid, tab_ledger = st.tabs([
+            f"⏳ Bekleyenler ({len(pending_debts)})",
+            f"✅ Ödenenler ({len(paid_debts)})",
+            "👤 Kişi Bazlı Özet",
+        ])
+
         with tab_pending:
             if not pending_debts:
                 st.success("Bekleyen borcunuz bulunmuyor! Her şey dengede.")
@@ -3312,7 +3176,7 @@ elif menu_selection == "🤝 Borç Takip Sistemi":
 
                     with st.expander(f"{cat_prefix}{d['name']}  —  {d['amount']:,.2f} TL  {type_lbl.split()[0]}", expanded=False):
                         st.markdown(f'<div id="debt-id-{d["id"]}"></div>', unsafe_allow_html=True)
-                        st.markdown(f"<div style='font-size: 0.82rem; color: #64748B; margin-bottom: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;'><span>{type_lbl}{vade_lbl}</span>{badge_html}</div>", unsafe_allow_html=True)
+                        st.markdown(f"<div style='font-size: 0.82rem; color: #94A3B8; margin-bottom: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;'><span>{type_lbl}{vade_lbl}</span>{badge_html}</div>", unsafe_allow_html=True)
                         c_paid, c_edit, c_del = st.columns(3)
                         with c_paid:
                             if st.button("✔️ Ödendi", key=f"pay_debt_{d['id']}", use_container_width=True):
@@ -3332,7 +3196,6 @@ elif menu_selection == "🤝 Borç Takip Sistemi":
                                 st.rerun()
 
         with tab_paid:
-            paid_debts = [d for d in all_debts if d['status'] == 'Ödendi']
             if not paid_debts:
                 st.info("Ödenmiş borç geçmişi bulunmuyor.")
             else:
@@ -3356,35 +3219,34 @@ elif menu_selection == "🤝 Borç Takip Sistemi":
                                 st.session_state.confirm_delete_debt_id = d['id']
                                 st.rerun()
 
-    st.markdown("---")
-    render_member_ledger(all_debts)
+        with tab_ledger:
+            render_member_ledger(all_debts)
 
 
-elif menu_selection == "💳 Ücret & Ödeme Takibi":
-    st.title("💳 Ücret & Ödeme Takibi")
-    _fee_store = FeeStore(
-        is_using_supabase(),
-        SupabaseClient(SUPABASE_URL, SUPABASE_KEY) if is_using_supabase() else None,
-        DB_PATH,
-    )
-    render_fees_page(_fee_store, get_categories(), invalidate_cache, today_date, default_tab="odeme", transactions=get_transactions())
+elif menu_selection == "⚙️ Ayarlar & Raporlar":
+    st.title("⚙️ Ayarlar & Raporlar")
+    tab_reports, tab_faiz_sim, tab_backup = st.tabs([
+        "📊 Raporlar & Excel",
+        "📈 Faiz & Simülasyon",
+        "💾 Yedek & Sistem",
+    ])
 
+    with tab_reports:
+        render_export_and_reports(
+            transactions=get_transactions(),
+            debts=get_debts(),
+            current_vault=current_vault,
+            total_interest_earned=total_interest_earned,
+            accumulated_interest=accumulated_interest,
+            monthly_flow=get_monthly_flow(),
+        )
 
-elif menu_selection == "🏕️ Kademeler":
-    st.title("🏕️ Kademeler & Kafile Yönetimi")
-    _fee_store = FeeStore(
-        is_using_supabase(),
-        SupabaseClient(SUPABASE_URL, SUPABASE_KEY) if is_using_supabase() else None,
-        DB_PATH,
-    )
-    render_fees_page(_fee_store, get_categories(), invalidate_cache, today_date, default_tab="kademeler", transactions=get_transactions())
-
-
-elif menu_selection == "⚙️ Faiz & Geçmişi Düzenle":
-    st.title("⚙️ Faiz Ayarları ve Simülasyon Detayları")
-    tab_faiz, tab_log = st.tabs(["📈 Faiz Oranı Kayıtları", "🔍 Günlük Hesaplama Detayları"])
-
-    with tab_faiz:
+    with tab_faiz_sim:
+        st.info(
+            "💡 **ON Hesap Faiz Kuralı:** "
+            "Kasadaki paranın Burgan ON limitlerine göre belirlenen 'vadesiz bakiye' kısmı faizden muaftır. "
+            "Aşan tutar günlük bileşik faiz ile nemalandırılır. Faiz kazançlarından %17.5 stopaj vergisi kesilmektedir."
+        )
         logs = get_rate_logs()
         show_rate_form = st.session_state.get('show_new_rate_form', False)
         r_col1, r_col2 = st.columns([3, 1])
@@ -3424,7 +3286,7 @@ elif menu_selection == "⚙️ Faiz & Geçmişi Düzenle":
                             st.toast("Faiz kaydı silindi.", icon="🗑️")
                             st.rerun()
 
-    with tab_log:
+        st.markdown("---")
         st.markdown("### 🔍 Simülasyon Günlük Detayları (Son 30 Gün)")
         if not daily_log:
             st.info("Henüz simüle edilecek veri bulunmuyor.")
@@ -3438,7 +3300,7 @@ elif menu_selection == "⚙️ Faiz & Geçmişi Düzenle":
                 'earning_base': 'Faiz İşleyen Matrah (TL)',
                 'interest_earned': 'Net Faiz Getirisi (TL)',
                 'vault_after_interest': 'Gün Sonu Kasa (TL)',
-                'rate': 'Uygulanan Faiz Oranı'
+                'rate': 'Uygulanan Faiz Oranı',
             })
             df_full['Uygulanan Faiz Oranı'] = df_full['Uygulanan Faiz Oranı'].apply(lambda x: f"%{x*100:.1f}" if x > 0 else "%0.0")
             df_last_30 = df_full.tail(30).iloc[::-1]
@@ -3454,5 +3316,63 @@ elif menu_selection == "⚙️ Faiz & Geçmişi Düzenle":
                     "Gün Sonu Kasa (TL)": st.column_config.NumberColumn(format="%.2f TL"),
                 },
                 hide_index=True,
-                use_container_width=True
+                use_container_width=True,
             )
+
+    with tab_backup:
+        st.markdown("### ⚡ Sistem Sağlığı & Bağlantı")
+        if is_using_supabase():
+            st.markdown("""
+            <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 12px; padding: 14px; margin-bottom: 12px;">
+                <div style="color: #10B981; font-weight: 700; font-size: 0.95rem;">🟢 Bulut Veritabanı: Supabase Aktif</div>
+                <div style="font-size: 0.8rem; color: #94A3B8; margin-top: 2px;">Canlı veritabanı senkronize ve Turbo Önbellek devrede.</div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 12px; padding: 14px; margin-bottom: 12px;">
+                <div style="color: #F59E0B; font-weight: 700; font-size: 0.95rem;">🟡 Yerel Veritabanı: SQLite Aktif</div>
+                <div style="font-size: 0.8rem; color: #94A3B8; margin-top: 2px;">Çevrimdışı / Yedek çalışma modu devrede.</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        sys_c1, sys_c2, sys_c3 = st.columns(3)
+        with sys_c1:
+            if is_using_supabase():
+                if st.button("📂 Yerel Moda Geç", key="switch_to_offline_btn", use_container_width=True):
+                    st.session_state["force_offline_mode"] = True
+                    invalidate_cache()
+                    st.toast("Yerel SQLite moduna geçildi.", icon="📂")
+                    st.rerun()
+            elif USE_SUPABASE:
+                if st.button("☁️ Bulut (Supabase) Modunu Dene", key="switch_to_cloud_btn", use_container_width=True):
+                    st.session_state["force_offline_mode"] = False
+                    invalidate_cache()
+                    st.toast("Bulut modu kontrol ediliyor...", icon="☁️")
+                    st.rerun()
+        with sys_c2:
+            if st.button("🧹 Önbelleği Sıfırla", key="btn_clear_cache", use_container_width=True):
+                invalidate_cache()
+                st.toast("Önbellek temizlendi!", icon="⚡")
+                st.rerun()
+        with sys_c3:
+            if st.button("🩺 Bağlantı Testi (Ping)", key="btn_test_db", use_container_width=True):
+                is_ok, lat, msg = test_supabase_connection()
+                if is_ok:
+                    st.toast(f"Supabase Aktif: {lat}ms", icon="🟢")
+                else:
+                    st.toast(f"{msg}", icon="🔴")
+
+        st.markdown("---")
+        try:
+            _sb_client = SupabaseClient(SUPABASE_URL, SUPABASE_KEY) if is_using_supabase() else None
+            render_backup_sync_ui(
+                categories=get_categories(),
+                transactions=get_transactions(),
+                debts=get_debts(),
+                rate_logs=get_rate_logs(),
+                is_using_supabase_Flag=is_using_supabase(),
+                supabase_client=_sb_client,
+            )
+        except Exception as _backup_err:
+            st.error(f"Yedekleme paneli yüklenemedi: {_backup_err}")
