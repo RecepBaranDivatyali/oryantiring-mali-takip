@@ -2219,6 +2219,7 @@ menu_options = [
     "🏷️ Kategori Yönetimi", 
     "🤝 Borç Takip Sistemi", 
     "💳 Ücret & Ödeme Takibi", 
+    "🏕️ Kademeler", 
     "⚙️ Faiz & Geçmişi Düzenle"
 ]
 
@@ -3366,7 +3367,17 @@ elif menu_selection == "💳 Ücret & Ödeme Takibi":
         SupabaseClient(SUPABASE_URL, SUPABASE_KEY) if is_using_supabase() else None,
         DB_PATH,
     )
-    render_fees_page(_fee_store, get_categories(), invalidate_cache, today_date)
+    render_fees_page(_fee_store, get_categories(), invalidate_cache, today_date, default_tab="odeme", transactions=get_transactions())
+
+
+elif menu_selection == "🏕️ Kademeler":
+    st.title("🏕️ Kademeler & Kafile Yönetimi")
+    _fee_store = FeeStore(
+        is_using_supabase(),
+        SupabaseClient(SUPABASE_URL, SUPABASE_KEY) if is_using_supabase() else None,
+        DB_PATH,
+    )
+    render_fees_page(_fee_store, get_categories(), invalidate_cache, today_date, default_tab="kademeler", transactions=get_transactions())
 
 
 elif menu_selection == "⚙️ Faiz & Geçmişi Düzenle":

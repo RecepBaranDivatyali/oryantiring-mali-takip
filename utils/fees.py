@@ -1,8 +1,23 @@
 """
-Sporcu havuzu + ücret kalemleri + ödeme takibi
-Pratik görünüm: Liste her zaman önde, ekleme formları sadece "+ Ekle" butonuna basınca açılır.
+Sporcu Havuzu + Kademeler (Kafile Grupları) + Tarifeli Ücret Kalemleri + Ödeme Takibi.
+
+Yeni özellikler (Supabase'de ek SQL tablosu gerektirmez, mevcut tablolarla %100 uyumludur):
+  1. Kademeler (örn. 1. Kademe Tokat, 2. Kademe, 3. Kademe, 4. Kademe):
+     - O kademeye gelen sporcular 1 kez seçilir.
+     - Ücret kalemi açarken (Otel, Ulaşım vb.) tek tıkla "Kademeye Gelenlere Ata" seçilir.
+     - Kademeye sonradan sporcu eklenirse bağlı ücret kalemlerine de otomatik eklenebilir.
+     - Kademe bazlı matris özeti (kim oteli ödedi, kim ulaşımı ödedi, toplam kalan) ve
+       kademe gelir/gider bilançosu tek ekranda görülür.
+  2. Çoklu Tarife Desteği (örn. Tokat Ulaşım -> Öğrenci: 1450, Mezun: 2400, Tek Yön: 850, Şehir İçi: 300):
+     - Ayrı ayrı ücret kalemi açmak yerine tek kalemde tarifeler tanımlanır.
+     - Ödeme Takibi tablosunda her sporcunun yanında açılır "Tarife" sütunu çıkar;
+       tarifesi değiştirilen sporcunun tutarı otomatik güncellenir.
+     - Tek fiyatlı kalemlerde de (örn. Otel) tablodaki "Tutar" hücresi kişiye özel
+       değiştirilebilir (örn. tek gece kalan sporcu için 1000 TL).
 """
 
+import json
+import re
 import sqlite3
 from datetime import datetime
 
@@ -11,6 +26,9 @@ import requests
 import streamlit as st
 
 DEFAULT_TIME_RANGE = "05:00 - 18:15"
+META_SEP = "\n__META__"
+KADEME_PREFIX = "__KADEME__::"
+KADEME_CAT_ID = -1
 
 TABLES = {
     "members": ("ory_members", "members"),
@@ -71,6 +89,114 @@ def _to_date_str(v):
     return None
 
 
+def parse_tariffs_text(txt: str) -> list[dict]:
+    """
+    Her satırdaki 'Tarife Adı: 1450' veya 'Tarife Adı - 1450 TL' ifadesini
+    [{'name': 'Öğrenci', 'amount': 1450.0}, ...] listesine çevirir.
+    """
+    tariffs = []
+    if not txt:
+        return tariffs
+    for raw_line in txt.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        # Son sayıyı bul
+        m = re.search(r"^(.*?)[\s:=\-–]+([0-9][0-9\.,]*)\s*(?:tl|₺)?\s*$", line, flags=re.IGNORECASE)
+        if not m:
+            continue
+        t_name = m.group(1).strip(" :-=–\t")
+        num_str = m.group(2).strip()
+        if "," in num_str and "." in num_str:
+            num_str = num_str.replace(".", "").replace(",", ".")
+        elif "," in num_str:
+            num_str = num_str.replace(",", ".")
+        try:
+            amt = float(num_str)
+        except ValueError:
+            continue
+        if t_name and amt >= 0:
+            tariffs.append({"name": t_name, "amount": amt})
+    return tariffs
+
+
+def format_tariffs_text(tariffs: list[dict]) -> str:
+    if not tariffs:
+        return ""
+    lines = []
+    for t in tariffs:
+        amt = float(t.get("amount", 0))
+        amt_str = f"{int(amt)}" if amt.is_integer() else f"{amt:.2f}"
+        lines.append(f"{t.get('name', 'Tarife')}: {amt_str}")
+    return "\n".join(lines)
+
+
+def _encode_fee_name(clean_name: str, tariffs: list[dict] = None, kademe_id: int = None) -> str:
+    clean_name = clean_name.strip()
+    meta = {}
+    if tariffs:
+        meta["tariffs"] = [{"name": str(t["name"]).strip(), "amount": float(t["amount"])} for t in tariffs]
+    if kademe_id is not None:
+        meta["kademe_id"] = int(kademe_id)
+    if not meta:
+        return clean_name
+    return f"{clean_name}{META_SEP}{json.dumps(meta, ensure_ascii=False)}"
+
+
+def _decode_fee_row(row: dict) -> dict:
+    r = dict(row)
+    raw_name = str(r.get("name") or "")
+    r["raw_name"] = raw_name
+    r["is_kademe"] = (r.get("category_id") == KADEME_CAT_ID) or raw_name.startswith(KADEME_PREFIX)
+    if r["is_kademe"]:
+        disp = raw_name[len(KADEME_PREFIX):] if raw_name.startswith(KADEME_PREFIX) else raw_name
+        if META_SEP in disp:
+            disp, meta_str = disp.split(META_SEP, 1)
+            try:
+                r["meta"] = json.loads(meta_str)
+            except Exception:
+                r["meta"] = {}
+        else:
+            r["meta"] = {}
+        r["name"] = disp.strip()
+        r["tariffs"] = []
+        r["kademe_id"] = None
+        return r
+
+    if META_SEP in raw_name:
+        clean_name, meta_str = raw_name.split(META_SEP, 1)
+        try:
+            meta = json.loads(meta_str)
+        except Exception:
+            meta = {}
+        r["name"] = clean_name.strip()
+        r["tariffs"] = meta.get("tariffs") or []
+        r["kademe_id"] = meta.get("kademe_id")
+    else:
+        r["name"] = raw_name.strip()
+        r["tariffs"] = []
+        r["kademe_id"] = None
+    return r
+
+
+def _tariff_option_label(t: dict) -> str:
+    return f"{t['name']} ({_fmt_tl(t['amount'])})"
+
+
+def _match_tariff_label(amount: float, tariffs: list[dict]) -> str:
+    for t in tariffs:
+        if abs(float(t["amount"]) - float(amount)) < 0.01:
+            return _tariff_option_label(t)
+    return f"Özel ({_fmt_tl(amount)})"
+
+
+def _match_tariff_name(amount: float, tariffs: list[dict]) -> str:
+    for t in tariffs:
+        if abs(float(t["amount"]) - float(amount)) < 0.01:
+            return t["name"]
+    return ""
+
+
 @st.cache_data(ttl=120, show_spinner=False)
 def _cached_fee_table(name: str, sb: bool, url: str, key: str, db_path: str):
     t = TABLES[name][0 if sb else 1]
@@ -92,7 +218,7 @@ def clear_fees_cache():
 
 
 class FeeStore:
-    """Hem Supabase hem SQLite için önbellekli ve toplu-işlem (bulk) destekli arayüz."""
+    """Hem Supabase hem SQLite için önbellekli, Kademe ve Çoklu Tarife destekli arayüz."""
 
     def __init__(self, use_supabase, client=None, db_path="ekonomi.db"):
         self.sb = bool(use_supabase and client is not None)
@@ -229,6 +355,7 @@ class FeeStore:
         st.session_state[cache_key] = True
         return True, ""
 
+    # ---------- sporcular ----------
     def members(self):
         return sorted(self._select_cached("members"), key=lambda m: (m["name"] or "").casefold())
 
@@ -255,24 +382,99 @@ class FeeStore:
         clear_fees_cache()
         return tx_changed
 
-    def fee_items(self):
-        return sorted(self._select_cached("fee_items"), key=lambda f: (f["name"] or "").casefold())
+    # ---------- kademeler (kafile grupları) ----------
+    def kademeler(self):
+        all_rows = [_decode_fee_row(r) for r in self._select_cached("fee_items")]
+        k_list = [r for r in all_rows if r["is_kademe"]]
+        k_list.sort(key=lambda r: (r["name"] or "").casefold())
+        all_asg = self._select_cached("assignments")
+        mem_names = {m["id"]: m["name"] for m in self.members()}
+        for k in k_list:
+            m_ids = [a["member_id"] for a in all_asg if a["fee_item_id"] == k["id"]]
+            k["member_ids"] = sorted(m_ids, key=lambda mid: (mem_names.get(mid, "") or "").casefold())
+            k["member_names"] = [mem_names.get(mid, "?") for mid in k["member_ids"]]
+        return k_list
 
-    def add_fee_item(self, name, amount, category_id):
+    def add_kademe(self, name: str, member_ids: list[int] = None) -> int:
+        raw_name = f"{KADEME_PREFIX}{name.strip()}"
+        kid = self._insert("fee_items", {"name": raw_name, "amount": 0.0, "category_id": KADEME_CAT_ID})
+        if kid and member_ids:
+            self.set_kademe_members(kid, member_ids, sync_linked_fees=False)
+        return kid
+
+    def update_kademe_name(self, kademe_id: int, new_name: str):
+        raw_name = f"{KADEME_PREFIX}{new_name.strip()}"
+        self._update("fee_items", {"name": raw_name}, kademe_id)
+
+    def set_kademe_members(self, kademe_id: int, new_member_ids: list[int], sync_linked_fees: bool = True):
+        new_set = set(new_member_ids)
+        curr_asg = [a for a in self._select_cached("assignments") if a["fee_item_id"] == kademe_id]
+        curr_set = {a["member_id"] for a in curr_asg}
+
+        to_add_ids = [mid for mid in new_member_ids if mid not in curr_set]
+        to_rm_asg = [a for a in curr_asg if a["member_id"] not in new_set]
+
+        if to_add_ids:
+            self._insert_many(
+                "assignments",
+                [
+                    {
+                        "member_id": mid,
+                        "fee_item_id": kademe_id,
+                        "amount": 0.0,
+                        "status": "Kademe",
+                        "paid_date": None,
+                        "transaction_id": None,
+                    }
+                    for mid in to_add_ids
+                ],
+            )
+        for a in to_rm_asg:
+            self._delete("assignments", a["id"])
+
+        if sync_linked_fees and to_add_ids:
+            for fee in self.fee_items():
+                if fee.get("kademe_id") == kademe_id:
+                    self.assign(fee["id"], to_add_ids)
+        clear_fees_cache()
+
+    def delete_kademe(self, kademe_id: int):
+        for a in [a for a in self._select_cached("assignments") if a["fee_item_id"] == kademe_id]:
+            self._delete("assignments", a["id"])
+        # Bağlı kalemlerin kademe_id bağını temizle
+        for f in self.fee_items():
+            if f.get("kademe_id") == kademe_id:
+                encoded = _encode_fee_name(f["name"], f.get("tariffs"), None)
+                self._update("fee_items", {"name": encoded}, f["id"])
+        self._delete("fee_items", kademe_id)
+        clear_fees_cache()
+
+    # ---------- ücret kalemleri ----------
+    def fee_items(self):
+        all_rows = [_decode_fee_row(r) for r in self._select_cached("fee_items")]
+        items = [r for r in all_rows if not r["is_kademe"]]
+        items.sort(key=lambda f: (f["name"] or "").casefold())
+        return items
+
+    def add_fee_item(self, name, amount, category_id, tariffs=None, kademe_id=None):
+        default_amt = float(tariffs[0]["amount"]) if tariffs else float(amount)
+        encoded_name = _encode_fee_name(name, tariffs=tariffs, kademe_id=kademe_id)
         return self._insert(
-            "fee_items", {"name": name.strip(), "amount": float(amount), "category_id": category_id}
+            "fee_items", {"name": encoded_name, "amount": default_amt, "category_id": category_id}
         )
 
-    def update_fee_item(self, fee_id, name, amount, category_id, update_unpaid=True):
+    def update_fee_item(self, fee_id, name, amount, category_id, tariffs=None, kademe_id=None, update_unpaid=False):
+        default_amt = float(tariffs[0]["amount"]) if tariffs else float(amount)
+        encoded_name = _encode_fee_name(name, tariffs=tariffs, kademe_id=kademe_id)
         self._update(
             "fee_items",
-            {"name": name.strip(), "amount": float(amount), "category_id": category_id},
+            {"name": encoded_name, "amount": default_amt, "category_id": category_id},
             fee_id,
         )
-        if update_unpaid:
+        if update_unpaid and not tariffs:
             for a in self.assignments(fee_id):
                 if a.get("status") != "Ödendi":
-                    self._update("assignments", {"amount": float(amount)}, a["id"])
+                    self._update("assignments", {"amount": default_amt}, a["id"])
         clear_fees_cache()
 
     def delete_fee_item(self, fee_id):
@@ -281,6 +483,7 @@ class FeeStore:
         self._delete("fee_items", fee_id)
         clear_fees_cache()
 
+    # ---------- atamalar ----------
     def assignments(self, fee_id):
         names = {m["id"]: m["name"] for m in self.members()}
         rows = [dict(r) for r in self._select_cached("assignments") if r["fee_item_id"] == fee_id]
@@ -289,16 +492,22 @@ class FeeStore:
         rows.sort(key=lambda r: (r["member_name"] or "").casefold())
         return rows
 
-    def assign(self, fee_id, member_ids):
+    def assign(self, fee_id, member_ids, custom_amount=None):
         fee = next((f for f in self.fee_items() if f["id"] == fee_id), None)
         if not fee:
             return 0
+        tariffs = fee.get("tariffs") or []
+        base_amt = (
+            float(custom_amount)
+            if custom_amount is not None
+            else (float(tariffs[0]["amount"]) if tariffs else float(fee["amount"]))
+        )
         have = {a["member_id"] for a in self.assignments(fee_id)}
         to_add = [
             {
                 "member_id": mid,
                 "fee_item_id": fee_id,
-                "amount": float(fee["amount"]),
+                "amount": base_amt,
                 "status": "Bekliyor",
                 "paid_date": None,
                 "transaction_id": None,
@@ -307,6 +516,14 @@ class FeeStore:
             if mid not in have
         ]
         return self._insert_many("assignments", to_add)
+
+    def set_assignment_amount(self, a, fee, new_amount: float):
+        new_amount = float(new_amount)
+        self._update("assignments", {"amount": new_amount}, a["id"])
+        if a.get("status") == "Ödendi" and a.get("transaction_id"):
+            t_name = _match_tariff_name(new_amount, fee.get("tariffs") or [])
+            desc = f"{fee['name']} ({t_name}) – {a['member_name']}" if t_name else f"{fee['name']} – {a['member_name']}"
+            self._update("transactions", {"amount": new_amount, "description": desc}, a["transaction_id"])
 
     def remove_assignments(self, assignment_ids):
         id_set = set(assignment_ids)
@@ -327,21 +544,25 @@ class FeeStore:
                 pass
         self._delete("assignments", a["id"])
 
-    def mark_paid(self, a, fee, member_name, date_str=None):
+    # ---------- ödeme ----------
+    def mark_paid(self, a, fee, member_name, date_str=None, override_amount=None):
         date_str = date_str or datetime.now().strftime("%Y-%m-%d")
+        amt = float(override_amount) if override_amount is not None else float(a["amount"])
+        t_name = _match_tariff_name(amt, fee.get("tariffs") or [])
+        desc = f"{fee['name']} ({t_name}) – {member_name}" if t_name else f"{fee['name']} – {member_name}"
         tx_id = self._insert(
             "transactions",
             {
                 "date": date_str,
                 "category_id": fee["category_id"],
-                "amount": float(a["amount"]),
-                "description": f"{fee['name']} – {member_name}",
+                "amount": amt,
+                "description": desc,
                 "time_range": DEFAULT_TIME_RANGE,
             },
         )
         self._update(
             "assignments",
-            {"status": "Ödendi", "paid_date": date_str, "transaction_id": tx_id},
+            {"amount": amt, "status": "Ödendi", "paid_date": date_str, "transaction_id": tx_id},
             a["id"],
         )
 
@@ -363,8 +584,201 @@ class FeeStore:
         )
 
 
+def _fee_price_summary(f: dict) -> str:
+    tariffs = f.get("tariffs") or []
+    if not tariffs:
+        return _fmt_tl(f["amount"])
+    parts = [f"{t['name']}: {_fmt_tl(t['amount'])}" for t in tariffs]
+    return " · ".join(parts)
+
+
+# =====================================================================
+# KADEME YÖNETİMİ VE MATRİS BİLANÇOSU
+# =====================================================================
+def render_kademeler_section(store: FeeStore, categories: list[dict], invalidate_cb, transactions: list[dict] = None):
+    members = store.members()
+    mem_map = {m["id"]: m["name"] for m in members}
+    kademeler = store.kademeler()
+    fee_items = store.fee_items()
+
+    kh1, kh2 = st.columns([3, 1])
+    kh1.markdown(f"#### 🏕️ Kademeler & Kafile Listeleri ({len(kademeler)})")
+    show_new_k = st.session_state.get("show_new_kademe_form", False)
+    if kh2.button(
+        "✖️ Kapat" if show_new_k else "➕ Yeni Kademe Ekle",
+        key="toggle_new_kademe_btn",
+        type="secondary" if show_new_k else "primary",
+        use_container_width=True,
+    ):
+        st.session_state["show_new_kademe_form"] = not show_new_k
+        st.rerun(scope="fragment")
+
+    if st.session_state.get("show_new_kademe_form", False):
+        with st.form("new_kademe_form", clear_on_submit=True):
+            k_name = st.text_input("Kademe / Etkinlik Adı", placeholder="Örn: 1. Kademe (Tokat), 2. Kademe (Antalya)")
+            copy_opts = {0: "Elle sporcu seçeceğim"}
+            for f in fee_items:
+                asg_cnt = len(store.assignments(f["id"]))
+                if asg_cnt:
+                    copy_opts[f["id"]] = f"📋 '{f['name']}' kalemindeki sporcuları kopyala ({asg_cnt} sporcu)"
+            copy_from = st.selectbox("Hızlı Kafile Kopyala (İsteğe Bağlı)", list(copy_opts.keys()), format_func=lambda k: copy_opts[k])
+            chosen_m = st.multiselect(
+                "Kademeye Gelen Sporcular",
+                list(mem_map.keys()),
+                format_func=lambda i: mem_map[i],
+            )
+            if st.form_submit_button("✅ Kademeyi Oluştur", type="primary"):
+                if not k_name.strip():
+                    st.error("Kademe adı boş olamaz.")
+                else:
+                    if copy_from and not chosen_m:
+                        m_ids = [a["member_id"] for a in store.assignments(copy_from)]
+                    else:
+                        m_ids = chosen_m
+                    store.add_kademe(k_name.strip(), m_ids)
+                    st.session_state["show_new_kademe_form"] = False
+                    st.toast(f"✅ '{k_name.strip()}' oluşturuldu ({len(m_ids)} sporcu).")
+                    st.rerun(scope="fragment")
+
+    if not kademeler:
+        st.info("Henüz kademe oluşturulmadı. Sağ üstteki **➕ Yeni Kademe Ekle** butonuyla bu yılki 4 kademenizi oluşturabilirsiniz.")
+        return
+
+    k_map = {k["id"]: k for k in kademeler}
+    sel_kid = st.selectbox(
+        "İncelenecek Kademe",
+        list(k_map.keys()),
+        format_func=lambda kid: f"🏕️ {k_map[kid]['name']} ({len(k_map[kid]['member_ids'])} sporcu)",
+        key="selected_kademe_view",
+    )
+    kademe = k_map[sel_kid]
+    k_member_ids = set(kademe["member_ids"])
+
+    # Bu kademeye bağlı ücret kalemleri
+    linked_fees = [f for f in fee_items if f.get("kademe_id") == sel_kid]
+
+    # Kademe özeti metrikleri ve matris tablosu
+    total_expected = 0.0
+    total_collected = 0.0
+    matrix_rows = []
+    for mid in kademe["member_ids"]:
+        m_name = mem_map.get(mid, "?")
+        row_data = {"Sporcu": m_name}
+        m_exp = 0.0
+        m_paid = 0.0
+        for f in linked_fees:
+            asg_list = store.assignments(f["id"])
+            a = next((x for x in asg_list if x["member_id"] == mid), None)
+            if a is None:
+                row_data[f["name"]] = "—"
+            else:
+                amt = float(a["amount"])
+                m_exp += amt
+                if a["status"] == "Ödendi":
+                    m_paid += amt
+                    row_data[f["name"]] = f"✅ {_fmt_tl(amt)}"
+                else:
+                    row_data[f["name"]] = f"⏳ {_fmt_tl(amt)}"
+        row_data["Toplam Tutar"] = m_exp
+        row_data["Ödenen"] = m_paid
+        row_data["Kalan Borç"] = m_exp - m_paid
+        total_expected += m_exp
+        total_collected += m_paid
+        matrix_rows.append(row_data)
+
+    # Ayrıca genel işlemlerde (transactions) bu kademenin adı geçen giderler varsa hesapla
+    kademe_expense = 0.0
+    if transactions:
+        k_tag = kademe["name"].lower()
+        for tx in transactions:
+            if tx.get("type") == "Gider" and k_tag in (tx.get("description") or "").lower():
+                kademe_expense += float(tx.get("amount", 0.0))
+
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("Kafile Sporcu Sayısı", f"{len(kademe['member_ids'])} kişi")
+    mc2.metric("Bağlı Ücret Kalemi", f"{len(linked_fees)} kalem")
+    mc3.metric("Sporculardan Toplanan", _fmt_tl(total_collected), delta=f"Beklenen: {_fmt_tl(total_expected)}")
+    mc4.metric("Kalan Alacak", _fmt_tl(total_expected - total_collected))
+
+    # Hızlı işlemler: Kafileyi Düzenle & Mevcut Kalemi Bu Kademeye Bağla
+    act_c1, act_c2, act_c3 = st.columns(3)
+    with act_c1:
+        with st.popover("👥 Kafile Sporcularını Düzenle", use_container_width=True):
+            new_m_sel = st.multiselect(
+                "Bu Kademeye Gelen Sporcular",
+                list(mem_map.keys()),
+                default=[mid for mid in kademe["member_ids"] if mid in mem_map],
+                format_func=lambda i: mem_map[i],
+                key=f"edit_kademe_members_{sel_kid}",
+            )
+            sync_chk = st.checkbox(
+                "Yeni eklenen sporcuları bu kademenin ücret kalemlerine de otomatik ata",
+                value=True,
+                key=f"sync_kademe_chk_{sel_kid}",
+            )
+            if st.button("💾 Kafileyi Güncelle", type="primary", key=f"save_kademe_mem_{sel_kid}", use_container_width=True):
+                store.set_kademe_members(sel_kid, new_m_sel, sync_linked_fees=sync_chk)
+                st.toast("✅ Kademe kafilesi güncellendi!")
+                st.rerun(scope="fragment")
+
+    with act_c2:
+        with st.popover("🔗 Ücret Kalemi Bağla / Ata", use_container_width=True):
+            st.caption("Mevcut bir ücret kalemini (örn. Otel veya Ulaşım) bu kademeye bağlayıp kafiledeki tüm sporculara tek tıkla atayabilirsiniz.")
+            if fee_items:
+                pick_fee = st.selectbox(
+                    "Ücret Kalemi",
+                    fee_items,
+                    format_func=lambda f: f"{f['name']} ({_fee_price_summary(f)})",
+                    key=f"link_fee_sel_{sel_kid}",
+                )
+                if st.button("🔗 Bağla ve Kafileye Ata", type="primary", key=f"btn_link_fee_{sel_kid}", use_container_width=True):
+                    store.update_fee_item(
+                        pick_fee["id"],
+                        pick_fee["name"],
+                        pick_fee["amount"],
+                        pick_fee["category_id"],
+                        tariffs=pick_fee.get("tariffs"),
+                        kademe_id=sel_kid,
+                    )
+                    n_asg = store.assign(pick_fee["id"], kademe["member_ids"])
+                    st.toast(f"✅ '{pick_fee['name']}' bu kademeye bağlandı ({n_asg} yeni sporcu atandı).")
+                    st.rerun(scope="fragment")
+            else:
+                st.info("Önce Ücret Kalemleri sekmesinden bir kalem oluşturun.")
+
+    with act_c3:
+        with st.popover("✏️ Kademeyi Düzenle / Sil", use_container_width=True):
+            new_kname = st.text_input("Kademe Adı", value=kademe["name"], key=f"ren_kademe_{sel_kid}")
+            if st.button("Adı Kaydet", type="primary", key=f"btn_ren_kademe_{sel_kid}", use_container_width=True):
+                if new_kname.strip():
+                    store.update_kademe_name(sel_kid, new_kname.strip())
+                    st.toast("✅ Kademe adı güncellendi.")
+                    st.rerun(scope="fragment")
+            if st.button("🗑️ Kademeyi Sil", key=f"btn_del_kademe_{sel_kid}", use_container_width=True):
+                store.delete_kademe(sel_kid)
+                st.toast("🗑️ Kademe silindi (ücret kalemleri ve ödemeler korunur).")
+                st.rerun(scope="fragment")
+
+    if matrix_rows:
+        st.markdown("##### 📊 Kademe Sporcu & Ödeme Matrisi")
+        df_mat = pd.DataFrame(matrix_rows)
+        st.dataframe(
+            df_mat,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Toplam Tutar": st.column_config.NumberColumn(format="%.2f TL"),
+                "Ödenen": st.column_config.NumberColumn(format="%.2f TL"),
+                "Kalan Borç": st.column_config.NumberColumn(format="%.2f TL"),
+            },
+        )
+
+
+# =====================================================================
+# ANA ÜCRET & ÖDEME TAKİBİ SAYFASI
+# =====================================================================
 @st.fragment
-def render_fees_page(store, categories, invalidate_cb, today_date):
+def render_fees_page(store, categories, invalidate_cb, today_date, default_tab=None, transactions=None):
     ok, err = store.ensure()
     if not ok:
         st.error("Ücret takibi tabloları Supabase'de henüz yok (ya da bağlantı kurulamadı).")
@@ -373,7 +787,17 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
         return
 
     income_cats = [c for c in categories if c.get("type") == "Gelir"]
-    tab_pay, tab_fee, tab_mem = st.tabs(["✅ Ödeme Takibi", "🧾 Ücret Kalemleri", "👥 Sporcu Havuzu"])
+    kademeler = store.kademeler()
+    k_map = {k["id"]: k for k in kademeler}
+
+    if default_tab == "kademeler":
+        tab_kademe, tab_pay, tab_fee, tab_mem = st.tabs(
+            ["🏕️ Kademeler", "✅ Ödeme Takibi", "🧾 Ücret Kalemleri", "👥 Sporcu Havuzu"]
+        )
+    else:
+        tab_pay, tab_fee, tab_kademe, tab_mem = st.tabs(
+            ["✅ Ödeme Takibi", "🧾 Ücret Kalemleri", "🏕️ Kademeler", "👥 Sporcu Havuzu"]
+        )
 
     # ------------------------------------------------ 1. Ödeme Takibi
     with tab_pay:
@@ -384,12 +808,26 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
             fee = st.selectbox(
                 "Ücret kalemi seçin",
                 items,
-                format_func=lambda f: f"{f['name']} — {_fmt_tl(f['amount'])}",
+                format_func=lambda f: f"{f['name']} — {_fee_price_summary(f)}",
                 key="fees_pay_item",
             )
+            tariffs = fee.get("tariffs") or []
             rows = store.assignments(fee["id"])
+
             if not rows:
-                st.info("Bu kaleme henüz sporcu atanmamış. **🧾 Ücret Kalemleri** sekmesinden atayabilirsiniz.")
+                st.info("Bu kaleme henüz sporcu atanmamış. **🧾 Ücret Kalemleri** sekmesinden veya aşağıdaki kademe butonundan atayabilirsiniz.")
+                if kademeler:
+                    q_col1, q_col2 = st.columns([2, 1])
+                    q_kid = q_col1.selectbox(
+                        "Kademeden Hızlı Ata",
+                        list(k_map.keys()),
+                        format_func=lambda kid: f"🏕️ {k_map[kid]['name']} ({len(k_map[kid]['member_ids'])} sporcu)",
+                        key=f"quick_kademe_assign_{fee['id']}",
+                    )
+                    if q_col2.button("⚡ Kafileyi Ata", type="primary", use_container_width=True, key=f"btn_q_kademe_{fee['id']}"):
+                        n_asg = store.assign(fee["id"], k_map[q_kid]["member_ids"])
+                        st.toast(f"✅ {n_asg} sporcu atandı.")
+                        st.rerun(scope="fragment")
             else:
                 paid = [r for r in rows if r["status"] == "Ödendi"]
                 total = sum(float(r["amount"]) for r in rows)
@@ -401,11 +839,24 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
                 c4.metric("Kalan", _fmt_tl(total - got))
                 st.progress(min(1.0, got / total) if total else 0.0)
 
+                if tariffs:
+                    # Tarife dağılım özeti
+                    t_counts = []
+                    for t in tariffs:
+                        cnt = sum(1 for r in rows if abs(float(r["amount"]) - float(t["amount"])) < 0.01)
+                        t_counts.append(f"**{t['name']}** ({_fmt_tl(t['amount'])}): `{cnt} kişi`")
+                    st.caption("🏷️ **Tarife Dağılımı:** " + "  ·  ".join(t_counts) + " — *Tablodaki **Tarife** sütununa tıklayarak sporcunun tarifesini değiştirebilirsiniz.*")
+
                 flt = st.radio(
-                    "Filtre", ["Hepsi", "Ödemeyenler", "Ödeyenler"], horizontal=True, key="fees_pay_filter", label_visibility="collapsed"
+                    "Filtre",
+                    ["Hepsi", "Ödemeyenler", "Ödeyenler"],
+                    horizontal=True,
+                    key="fees_pay_filter",
+                    label_visibility="collapsed",
                 )
                 shown = [
-                    r for r in rows
+                    r
+                    for r in rows
                     if flt == "Hepsi"
                     or (flt == "Ödemeyenler" and r["status"] != "Ödendi")
                     or (flt == "Ödeyenler" and r["status"] == "Ödendi")
@@ -414,31 +865,75 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
                     st.success("Bu filtrede kayıt yok.")
                 else:
                     by_id = {r["id"]: r for r in shown}
-                    df = pd.DataFrame(
-                        {
-                            "Sporcu": [r["member_name"] for r in shown],
-                            "Tutar": [float(r["amount"]) for r in shown],
-                            "Ödedi": [r["status"] == "Ödendi" for r in shown],
-                            "Ödeme Tarihi": pd.to_datetime([r.get("paid_date") for r in shown]),
-                        },
-                        index=[r["id"] for r in shown],
-                    )
                     ver = st.session_state.get("fees_pay_ver", 0)
-                    edited = st.data_editor(
-                        df,
-                        hide_index=True,
-                        use_container_width=True,
-                        disabled=["Sporcu", "Tutar"],
-                        column_config={
-                            "Tutar": st.column_config.NumberColumn(format="%.2f TL"),
-                            "Ödedi": st.column_config.CheckboxColumn("Ödedi"),
-                            "Ödeme Tarihi": st.column_config.DateColumn("Ödeme Tarihi", format="YYYY-MM-DD"),
-                        },
-                        key=f"fees_editor_{fee['id']}_{flt}_{ver}",
-                    )
+
+                    if tariffs:
+                        tariff_labels = [_tariff_option_label(t) for t in tariffs]
+                        label_to_amt = {_tariff_option_label(t): float(t["amount"]) for t in tariffs}
+                        curr_labels = []
+                        for r in shown:
+                            lbl = _match_tariff_label(r["amount"], tariffs)
+                            if lbl not in label_to_amt:
+                                label_to_amt[lbl] = float(r["amount"])
+                                if lbl not in tariff_labels:
+                                    tariff_labels.append(lbl)
+                            curr_labels.append(lbl)
+
+                        df = pd.DataFrame(
+                            {
+                                "Sporcu": [r["member_name"] for r in shown],
+                                "Tarife": curr_labels,
+                                "Tutar": [float(r["amount"]) for r in shown],
+                                "Ödedi": [r["status"] == "Ödendi" for r in shown],
+                                "Ödeme Tarihi": pd.to_datetime([r.get("paid_date") for r in shown]),
+                            },
+                            index=[r["id"] for r in shown],
+                        )
+                        edited = st.data_editor(
+                            df,
+                            hide_index=True,
+                            use_container_width=True,
+                            disabled=["Sporcu", "Tutar"],
+                            column_config={
+                                "Tarife": st.column_config.SelectboxColumn(
+                                    "Tarife Seçimi",
+                                    options=tariff_labels,
+                                    required=True,
+                                    help="Sporcunun tarifesini seçin (Kaydet'e basınca tutarı otomatik güncellenir).",
+                                ),
+                                "Tutar": st.column_config.NumberColumn("Tutar", format="%.2f TL"),
+                                "Ödedi": st.column_config.CheckboxColumn("Ödedi"),
+                                "Ödeme Tarihi": st.column_config.DateColumn("Ödeme Tarihi", format="YYYY-MM-DD"),
+                            },
+                            key=f"fees_editor_{fee['id']}_{flt}_{ver}",
+                        )
+                    else:
+                        df = pd.DataFrame(
+                            {
+                                "Sporcu": [r["member_name"] for r in shown],
+                                "Tutar": [float(r["amount"]) for r in shown],
+                                "Ödedi": [r["status"] == "Ödendi" for r in shown],
+                                "Ödeme Tarihi": pd.to_datetime([r.get("paid_date") for r in shown]),
+                            },
+                            index=[r["id"] for r in shown],
+                        )
+                        edited = st.data_editor(
+                            df,
+                            hide_index=True,
+                            use_container_width=True,
+                            disabled=["Sporcu"],
+                            column_config={
+                                "Tutar": st.column_config.NumberColumn(
+                                    "Tutar (Kişiye Özel Düzenlenebilir)", format="%.2f TL", min_value=0.0, step=50.0
+                                ),
+                                "Ödedi": st.column_config.CheckboxColumn("Ödedi"),
+                                "Ödeme Tarihi": st.column_config.DateColumn("Ödeme Tarihi", format="YYYY-MM-DD"),
+                            },
+                            key=f"fees_editor_{fee['id']}_{flt}_{ver}",
+                        )
 
                     if st.button("💾 Değişiklikleri Kaydet", type="primary", key="fees_pay_save"):
-                        n_paid = n_unpaid = n_date = 0
+                        n_paid = n_unpaid = n_date = n_tariff = 0
                         for aid, row in edited.iterrows():
                             a = by_id.get(aid)
                             if a is None:
@@ -447,19 +942,48 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
                             now_paid = bool(row["Ödedi"])
                             new_date = _to_date_str(row["Ödeme Tarihi"])
                             old_date = _to_date_str(a.get("paid_date"))
+
+                            old_amt = float(a["amount"])
+                            if tariffs and "Tarife" in row:
+                                chosen_lbl = row["Tarife"]
+                                new_amt = float(label_to_amt.get(chosen_lbl, old_amt))
+                            else:
+                                new_amt = float(row["Tutar"]) if pd.notna(row["Tutar"]) else old_amt
+
+                            amt_changed = abs(new_amt - old_amt) >= 0.01
+
                             if now_paid and not was_paid:
-                                store.mark_paid(a, fee, a["member_name"], new_date)
+                                store.mark_paid(a, fee, a["member_name"], new_date, override_amount=new_amt)
                                 n_paid += 1
+                                if amt_changed:
+                                    n_tariff += 1
                             elif not now_paid and was_paid:
                                 store.unmark_paid(a)
+                                if amt_changed:
+                                    store.set_assignment_amount(a, fee, new_amt)
+                                    n_tariff += 1
                                 n_unpaid += 1
-                            elif now_paid and was_paid and new_date and new_date != old_date:
-                                store.set_paid_date(a, new_date)
-                                n_date += 1
-                        if n_paid or n_unpaid or n_date:
+                            else:
+                                if amt_changed:
+                                    store.set_assignment_amount(a, fee, new_amt)
+                                    n_tariff += 1
+                                if now_paid and was_paid and new_date and new_date != old_date:
+                                    store.set_paid_date(a, new_date)
+                                    n_date += 1
+
+                        if n_paid or n_unpaid or n_date or n_tariff:
                             st.session_state["fees_pay_ver"] = ver + 1
                             invalidate_cb()
-                            st.toast(f"✅ {n_paid} ödendi, {n_unpaid} geri alındı, {n_date} tarih güncellendi.")
+                            parts = []
+                            if n_paid:
+                                parts.append(f"{n_paid} ödendi")
+                            if n_unpaid:
+                                parts.append(f"{n_unpaid} geri alındı")
+                            if n_tariff:
+                                parts.append(f"{n_tariff} tarife/tutar güncellendi")
+                            if n_date:
+                                parts.append(f"{n_date} tarih güncellendi")
+                            st.toast("✅ " + ", ".join(parts) + ".")
                             st.rerun(scope="fragment")
                         else:
                             st.info("Değişiklik yok.")
@@ -473,7 +997,12 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
         h_col1, h_col2 = st.columns([3, 1])
         h_col1.markdown(f"#### 🧾 Ücret Kalemleri ({len(fee_list)})")
         show_new_fee = st.session_state.get("show_new_fee_form", False)
-        if h_col2.button("✖️ Kapat" if show_new_fee else "➕ Yeni Kalem Ekle", key="toggle_new_fee_btn", type="secondary" if show_new_fee else "primary", use_container_width=True):
+        if h_col2.button(
+            "✖️ Kapat" if show_new_fee else "➕ Yeni Kalem Ekle",
+            key="toggle_new_fee_btn",
+            type="secondary" if show_new_fee else "primary",
+            use_container_width=True,
+        ):
             st.session_state["show_new_fee_form"] = not show_new_fee
             st.rerun(scope="fragment")
 
@@ -481,30 +1010,76 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
             if not income_cats:
                 st.warning("Önce Kategori Yönetimi'nden bir **Gelir** kategorisi oluşturun.")
             else:
+                pricing_mode = st.radio(
+                    "Ücretlendirme Tipi",
+                    ["🏷️ Tek Sabit Fiyat (Örn: Otel, Forma)", "📊 Çoklu Tarife (Örn: Ulaşım -> Öğrenci / Mezun / Tek Yön)"],
+                    horizontal=True,
+                    key="new_fee_pricing_mode",
+                )
+                is_multi_tariff = pricing_mode.startswith("📊")
+
+                assign_mode_opts = ["🏕️ Kademeye Gelenlere Ata"] if kademeler else []
+                assign_mode_opts += ["👥 Tüm Sporculara Ata", "🎯 Sadece Seçilen Sporculara Ata"]
+                assign_mode = st.radio("Kimlere Atansın?", assign_mode_opts, horizontal=True, key="new_fee_assign_mode")
+
                 with st.form("fees_new_item", clear_on_submit=True):
                     f1, f2 = st.columns([2, 1])
-                    name = f1.text_input("Kalem Adı", placeholder="Örn: Kırmızı tişört")
-                    amount = f2.number_input("Birim Fiyat (TL)", min_value=0.0, step=50.0, format="%.2f")
-                    cat = st.selectbox(
-                        "Gelir kategorisi",
+                    name = f1.text_input("Kalem Adı", placeholder="Örn: Tokat Ulaşım veya Tokat Otel")
+                    cat = f2.selectbox(
+                        "Gelir Kategorisi",
                         income_cats,
                         format_func=lambda c: f"{c['emoji']} {c['name']}",
                     )
-                    everyone = st.checkbox("Tüm sporculara ata", value=True)
-                    chosen = st.multiselect(
-                        "…veya sadece seçilen sporculara ata",
-                        list(mem_map.keys()),
-                        format_func=lambda i: mem_map[i],
-                    )
+
+                    if is_multi_tariff:
+                        tariffs_raw = st.text_area(
+                            "Tarifeler (Her satıra `Tarife Adı: Fiyat` yazın — ilk satır varsayılan tarife olur)",
+                            value="Öğrenci: 1450\nMezun: 2400\nTek Yön Gidiş/Geliş: 850\nYalnız Şehir İçi: 300",
+                            height=115,
+                        )
+                        amount = 0.0
+                    else:
+                        amount = st.number_input("Birim Fiyat (TL)", min_value=0.0, step=50.0, format="%.2f")
+                        tariffs_raw = ""
+
+                    sel_kademe_id = None
+                    chosen = []
+                    if assign_mode.startswith("🏕️") and kademeler:
+                        sel_kademe_id = st.selectbox(
+                            "Hangi Kademeye Gelenler?",
+                            list(k_map.keys()),
+                            format_func=lambda kid: f"🏕️ {k_map[kid]['name']} ({len(k_map[kid]['member_ids'])} sporcu)",
+                        )
+                    elif assign_mode.startswith("🎯"):
+                        chosen = st.multiselect(
+                            "Sorumlu Sporcuları Seçin",
+                            list(mem_map.keys()),
+                            format_func=lambda i: mem_map[i],
+                        )
+
                     if st.form_submit_button("✅ Kalemi Oluştur", type="primary"):
+                        parsed_tariffs = parse_tariffs_text(tariffs_raw) if is_multi_tariff else []
                         if not name.strip():
-                            st.error("Ad boş olamaz.")
+                            st.error("Kalem adı boş olamaz.")
+                        elif is_multi_tariff and not parsed_tariffs:
+                            st.error("Lütfen en az bir geçerli tarife girin (Örn: `Öğrenci: 1450`).")
                         else:
-                            fid = store.add_fee_item(name, amount, cat["id"])
-                            ids = list(mem_map.keys()) if everyone else chosen
-                            n = store.assign(fid, ids) if ids else 0
+                            fid = store.add_fee_item(
+                                name,
+                                amount,
+                                cat["id"],
+                                tariffs=parsed_tariffs,
+                                kademe_id=sel_kademe_id,
+                            )
+                            if assign_mode.startswith("🏕️") and sel_kademe_id in k_map:
+                                target_ids = k_map[sel_kademe_id]["member_ids"]
+                            elif assign_mode.startswith("👥"):
+                                target_ids = list(mem_map.keys())
+                            else:
+                                target_ids = chosen
+                            n = store.assign(fid, target_ids) if target_ids else 0
                             st.session_state["show_new_fee_form"] = False
-                            st.toast(f"✅ '{name.strip()}' eklendi ({n} sporcu).")
+                            st.toast(f"✅ '{name.strip()}' oluşturuldu ve {n} sporcuya atandı.")
                             st.rerun(scope="fragment")
 
         if not fee_list:
@@ -513,12 +1088,39 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
             for f in fee_list:
                 asg = store.assignments(f["id"])
                 paid_n = sum(1 for a in asg if a["status"] == "Ödendi")
-                with st.expander(f"{f['name']} — {_fmt_tl(f['amount'])}  ·  {paid_n}/{len(asg)} ödedi"):
+                k_badge = f" · 🏕️ {k_map[f['kademe_id']]['name']}" if f.get("kademe_id") in k_map else ""
+                with st.expander(f"{f['name']} — {_fee_price_summary(f)}{k_badge}  ·  {paid_n}/{len(asg)} ödedi"):
                     assigned_ids = {a["member_id"] for a in asg}
                     free = [m for m in members if m["id"] not in assigned_ids]
+
+                    if kademeler:
+                        kc1, kc2 = st.columns([2, 1])
+                        pick_k = kc1.selectbox(
+                            "🏕️ Kademe Kafilesinden Ata",
+                            list(k_map.keys()),
+                            index=list(k_map.keys()).index(f["kademe_id"]) if f.get("kademe_id") in k_map else 0,
+                            format_func=lambda kid: f"🏕️ {k_map[kid]['name']} ({len(k_map[kid]['member_ids'])} sporcu)",
+                            key=f"fee_kademe_pick_{f['id']}",
+                        )
+                        if kc2.button("⚡ Bu Kademeyi Ata", key=f"fee_kademe_btn_{f['id']}", use_container_width=True):
+                            store.update_fee_item(
+                                f["id"],
+                                f["name"],
+                                f["amount"],
+                                f["category_id"],
+                                tariffs=f.get("tariffs"),
+                                kademe_id=pick_k,
+                            )
+                            n_added = store.assign(f["id"], k_map[pick_k]["member_ids"])
+                            st.toast(f"✅ Kademeden {n_added} yeni sporcu eklendi.")
+                            st.rerun(scope="fragment")
+
                     if free:
                         add_sel = st.multiselect(
-                            "Sorumlu sporcu ekle", [m["id"] for m in free], format_func=lambda i: mem_map[i], key=f"fees_add_{f['id']}"
+                            "Tek tek sorumlu sporcu ekle",
+                            [m["id"] for m in free],
+                            format_func=lambda i: mem_map[i],
+                            key=f"fees_add_{f['id']}",
                         )
                         b1, b2 = st.columns(2)
                         if b1.button("➕ Seçilenleri ata", key=f"fees_addbtn_{f['id']}", use_container_width=True) and add_sel:
@@ -545,21 +1147,46 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
                             st.toast("✅ Atamalar kaldırıldı.")
                             st.rerun(scope="fragment")
 
-                    with st.popover("✏️ Kalemi Düzenle / Sil"):
+                    with st.popover("✏️ Kalemi & Tarifeleri Düzenle / Sil"):
                         with st.form(f"fees_edit_{f['id']}"):
-                            n_name = st.text_input("Ad", value=f["name"])
-                            n_amount = st.number_input("Fiyat (TL)", min_value=0.0, step=50.0, format="%.2f", value=float(f["amount"]))
+                            n_name = st.text_input("Kalem Adı", value=f["name"])
+                            n_amount = st.number_input(
+                                "Sabit Fiyat (Çoklu tarife yoksa geçerlidir)",
+                                min_value=0.0,
+                                step=50.0,
+                                format="%.2f",
+                                value=float(f["amount"]),
+                            )
+                            n_tariffs_txt = st.text_area(
+                                "Çoklu Tarifeler (İsteğe bağlı — her satıra `Ad: Fiyat`, tek fiyat için boş bırakın)",
+                                value=format_tariffs_text(f.get("tariffs") or []),
+                                height=100,
+                                placeholder="Öğrenci: 1450\nMezun: 2400\nTek Yön: 850",
+                            )
                             cur_idx = next((i for i, c in enumerate(income_cats) if c["id"] == f["category_id"]), 0)
-                            n_cat = st.selectbox(
-                                "Gelir kategorisi",
-                                income_cats,
-                                index=cur_idx,
-                                format_func=lambda c: f"{c['emoji']} {c['name']}",
-                            ) if income_cats else None
-                            upd = st.checkbox("Ödenmemiş sporcuların tutarını da güncelle", value=True)
+                            n_cat = (
+                                st.selectbox(
+                                    "Gelir kategorisi",
+                                    income_cats,
+                                    index=cur_idx,
+                                    format_func=lambda c: f"{c['emoji']} {c['name']}",
+                                )
+                                if income_cats
+                                else None
+                            )
+                            upd = st.checkbox("Tek fiyatlıysa ödenmemiş sporcuların tutarını da güncelle", value=False)
                             if st.form_submit_button("Değişiklikleri Kaydet", type="primary") and n_cat:
-                                store.update_fee_item(f["id"], n_name, n_amount, n_cat["id"], upd)
-                                st.toast("✅ Kalem güncellendi.")
+                                new_tariffs = parse_tariffs_text(n_tariffs_txt)
+                                store.update_fee_item(
+                                    f["id"],
+                                    n_name,
+                                    n_amount,
+                                    n_cat["id"],
+                                    tariffs=new_tariffs,
+                                    kademe_id=f.get("kademe_id"),
+                                    update_unpaid=upd,
+                                )
+                                st.toast("✅ Kalem ve tarifeler güncellendi.")
                                 st.rerun(scope="fragment")
                         if st.button("🗑️ Bu Kalemi Tamamen Sil", key=f"fees_delbtn_{f['id']}", use_container_width=True):
                             store.delete_fee_item(f["id"])
@@ -567,13 +1194,22 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
                             st.toast("🗑️ Kalem silindi.")
                             st.rerun(scope="fragment")
 
-    # ------------------------------------------------ 3. Sporcu Havuzu
+    # ------------------------------------------------ 3. Kademeler
+    with tab_kademe:
+        render_kademeler_section(store, categories, invalidate_cb, transactions=transactions)
+
+    # ------------------------------------------------ 4. Sporcu Havuzu
     with tab_mem:
         members = store.members()
         m_col1, m_col2 = st.columns([3, 1])
         m_col1.markdown(f"#### 👥 Kayıtlı Sporcular ({len(members)})")
         show_new_mem = st.session_state.get("show_new_mem_form", False)
-        if m_col2.button("✖️ Kapat" if show_new_mem else "➕ Sporcu Ekle", key="toggle_new_mem_btn", type="secondary" if show_new_mem else "primary", use_container_width=True):
+        if m_col2.button(
+            "✖️ Kapat" if show_new_mem else "➕ Sporcu Ekle",
+            key="toggle_new_mem_btn",
+            type="secondary" if show_new_mem else "primary",
+            use_container_width=True,
+        ):
             st.session_state["show_new_mem_form"] = not show_new_mem
             st.rerun(scope="fragment")
 
@@ -594,7 +1230,11 @@ def render_fees_page(store, categories, invalidate_cb, today_date):
                         st.info("Yeni isim bulunamadı (zaten kayıtlı olabilir).")
 
         if members:
-            st.dataframe(pd.DataFrame({"Sporcu Adı": [m["name"] for m in members]}), hide_index=True, use_container_width=True)
+            st.dataframe(
+                pd.DataFrame({"Sporcu Adı": [m["name"] for m in members]}),
+                hide_index=True,
+                use_container_width=True,
+            )
             with st.popover("🗑️ Sporcu Sil"):
                 mem_map = {m["id"]: m["name"] for m in members}
                 del_sel = st.multiselect("Silinecek sporcular", list(mem_map.keys()), format_func=lambda i: mem_map[i])
