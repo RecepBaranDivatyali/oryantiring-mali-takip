@@ -15,6 +15,11 @@ from .member_ledger import (
     render_member_ledger,
     get_known_members,
 )
+from .fees import (
+    FeeStore,
+    render_fees_page,
+    get_pending_fees_total,
+)
 
 __all__ = [
     "create_json_backup",
@@ -24,4 +29,7 @@ __all__ = [
     "render_export_and_reports",
     "render_member_ledger",
     "get_known_members",
+    "FeeStore",
+    "render_fees_page",
+    "get_pending_fees_total",
 ]

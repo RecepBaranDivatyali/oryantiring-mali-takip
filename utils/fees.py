@@ -25,6 +25,15 @@ import pandas as pd
 import requests
 import streamlit as st
 
+# Backward-compatible fragment and rerun helpers
+_fragment = getattr(st, 'fragment', getattr(st, 'experimental_fragment', lambda f: f))
+
+def _rerun_fragment():
+    try:
+        st.rerun(scope='fragment')
+    except Exception:
+        st.rerun()
+
 DEFAULT_TIME_RANGE = "05:00 - 18:15"
 META_SEP = "\n__META__"
 KADEME_PREFIX = "__KADEME__::"
@@ -626,7 +635,7 @@ def render_kademeler_section(store: FeeStore, categories: list[dict], invalidate
         use_container_width=True,
     ):
         st.session_state["show_new_kademe_form"] = not show_new_k
-        st.rerun(scope="fragment")
+        _rerun_fragment()
 
     if st.session_state.get("show_new_kademe_form", False):
         with st.form("new_kademe_form", clear_on_submit=True):
@@ -653,7 +662,7 @@ def render_kademeler_section(store: FeeStore, categories: list[dict], invalidate
                     store.add_kademe(k_name.strip(), m_ids)
                     st.session_state["show_new_kademe_form"] = False
                     st.toast(f"✅ '{k_name.strip()}' oluşturuldu ({len(m_ids)} sporcu).")
-                    st.rerun(scope="fragment")
+                    _rerun_fragment()
 
     if not kademeler:
         st.info("Henüz kademe oluşturulmadı. Sağ üstteki **➕ Yeni Kademe Ekle** butonuyla bu yılki 4 kademenizi oluşturabilirsiniz.")
@@ -734,7 +743,7 @@ def render_kademeler_section(store: FeeStore, categories: list[dict], invalidate
             if st.button("💾 Kafileyi Güncelle", type="primary", key=f"save_kademe_mem_{sel_kid}", use_container_width=True):
                 store.set_kademe_members(sel_kid, new_m_sel, sync_linked_fees=sync_chk)
                 st.toast("✅ Kademe kafilesi güncellendi!")
-                st.rerun(scope="fragment")
+                _rerun_fragment()
 
     with act_c2:
         with st.popover("🔗 Ücret Kalemi Bağla", use_container_width=True):
@@ -757,7 +766,7 @@ def render_kademeler_section(store: FeeStore, categories: list[dict], invalidate
                     )
                     n_asg = store.assign(pick_fee["id"], kademe["member_ids"])
                     st.toast(f"✅ '{pick_fee['name']}' bu kademeye bağlandı ({n_asg} yeni sporcu atandı).")
-                    st.rerun(scope="fragment")
+                    _rerun_fragment()
             else:
                 st.info("Önce Ücret Kalemleri sekmesinden bir kalem oluşturun.")
 
@@ -799,11 +808,11 @@ def render_kademeler_section(store: FeeStore, categories: list[dict], invalidate
                 if new_kname.strip():
                     store.update_kademe_name(sel_kid, new_kname.strip())
                     st.toast("✅ Kademe adı güncellendi.")
-                    st.rerun(scope="fragment")
+                    _rerun_fragment()
             if st.button("🗑️ Kademeyi Sil", key=f"btn_del_kademe_{sel_kid}", use_container_width=True):
                 store.delete_kademe(sel_kid)
                 st.toast("🗑️ Kademe silindi (ücret kalemleri ve ödemeler korunur).")
-                st.rerun(scope="fragment")
+                _rerun_fragment()
 
     if matrix_rows:
         st.markdown("##### 📊 Kademe Sporcu & Ödeme Matrisi")
@@ -823,7 +832,7 @@ def render_kademeler_section(store: FeeStore, categories: list[dict], invalidate
 # =====================================================================
 # ANA ÜCRET & ÖDEME TAKİBİ SAYFASI
 # =====================================================================
-@st.fragment
+@_fragment
 def render_fees_page(store, categories, invalidate_cb, today_date, default_tab=None, transactions=None):
     ok, err = store.ensure()
     if not ok:
@@ -890,7 +899,7 @@ def render_fees_page(store, categories, invalidate_cb, today_date, default_tab=N
                             if add_pay_sel:
                                 n_new = store.assign(fee["id"], add_pay_sel, custom_amount=pay_custom_amt)
                                 st.toast(f"✅ {n_new} sporcu eklendi.")
-                                st.rerun(scope="fragment")
+                                _rerun_fragment()
                             else:
                                 st.warning("Lütfen en az bir sporcu seçin.")
 
@@ -907,7 +916,7 @@ def render_fees_page(store, categories, invalidate_cb, today_date, default_tab=N
                     if q_col2.button("⚡ Kafileyi Ata", type="primary", use_container_width=True, key=f"btn_q_kademe_{fee['id']}"):
                         n_asg = store.assign(fee["id"], k_map[q_kid]["member_ids"])
                         st.toast(f"✅ {n_asg} sporcu atandı.")
-                        st.rerun(scope="fragment")
+                        _rerun_fragment()
             else:
                 paid = [r for r in rows if r["status"] == "Ödendi"]
                 total = sum(float(r["amount"]) for r in rows)
@@ -1092,7 +1101,7 @@ def render_fees_page(store, categories, invalidate_cb, today_date, default_tab=N
                             if n_date:
                                 parts.append(f"{n_date} tarih güncellendi")
                             st.toast("✅ " + ", ".join(parts) + ".")
-                            st.rerun(scope="fragment")
+                            _rerun_fragment()
                         else:
                             st.info("Değişiklik yok.")
 
@@ -1112,7 +1121,7 @@ def render_fees_page(store, categories, invalidate_cb, today_date, default_tab=N
             use_container_width=True,
         ):
             st.session_state["show_new_fee_form"] = not show_new_fee
-            st.rerun(scope="fragment")
+            _rerun_fragment()
 
         if st.session_state.get("show_new_fee_form", False):
             if not income_cats:
@@ -1188,7 +1197,7 @@ def render_fees_page(store, categories, invalidate_cb, today_date, default_tab=N
                             n = store.assign(fid, target_ids) if target_ids else 0
                             st.session_state["show_new_fee_form"] = False
                             st.toast(f"✅ '{name.strip()}' oluşturuldu ve {n} sporcuya atandı.")
-                            st.rerun(scope="fragment")
+                            _rerun_fragment()
 
         if not fee_list:
             st.info("Henüz kayıtlı bir ücret kalemi yok. Sağ üstteki **➕ Yeni Kalem Ekle** butonuna basarak oluşturabilirsiniz.")
@@ -1221,7 +1230,7 @@ def render_fees_page(store, categories, invalidate_cb, today_date, default_tab=N
                             )
                             n_added = store.assign(f["id"], k_map[pick_k]["member_ids"])
                             st.toast(f"✅ Kademeden {n_added} yeni sporcu eklendi.")
-                            st.rerun(scope="fragment")
+                            _rerun_fragment()
 
                     if free:
                         f_tariffs = f.get("tariffs") or []
@@ -1252,11 +1261,11 @@ def render_fees_page(store, categories, invalidate_cb, today_date, default_tab=N
                         if b1.button("➕ Seçilenleri ata", key=f"fees_addbtn_{f['id']}", use_container_width=True) and add_sel:
                             store.assign(f["id"], add_sel, custom_amount=chosen_custom_amt)
                             st.toast("✅ Sporcular atandı.")
-                            st.rerun(scope="fragment")
+                            _rerun_fragment()
                         if b2.button("➕ Kalan herkesi ata", key=f"fees_addall_{f['id']}", use_container_width=True):
                             store.assign(f["id"], [m["id"] for m in free], custom_amount=chosen_custom_amt)
                             st.toast("✅ Tüm sporcular atandı.")
-                            st.rerun(scope="fragment")
+                            _rerun_fragment()
 
                     if asg:
                         rm_map = {a["id"]: a["member_name"] + (" (ödedi)" if a["status"] == "Ödendi" else "") for a in asg}
@@ -1271,7 +1280,7 @@ def render_fees_page(store, categories, invalidate_cb, today_date, default_tab=N
                             if tx_ch:
                                 invalidate_cb()
                             st.toast("✅ Atamalar kaldırıldı.")
-                            st.rerun(scope="fragment")
+                            _rerun_fragment()
 
                     with st.popover("✏️ Kalemi & Tarifeleri Düzenle / Sil"):
                         with st.form(f"fees_edit_{f['id']}"):
@@ -1313,12 +1322,12 @@ def render_fees_page(store, categories, invalidate_cb, today_date, default_tab=N
                                     update_unpaid=upd,
                                 )
                                 st.toast("✅ Kalem ve tarifeler güncellendi.")
-                                st.rerun(scope="fragment")
+                                _rerun_fragment()
                         if st.button("🗑️ Bu Kalemi Tamamen Sil", key=f"fees_delbtn_{f['id']}", use_container_width=True):
                             store.delete_fee_item(f["id"])
                             invalidate_cb()
                             st.toast("🗑️ Kalem silindi.")
-                            st.rerun(scope="fragment")
+                            _rerun_fragment()
 
     # ------------------------------------------------ 3. Kademeler
     with tab_kademe:
@@ -1337,7 +1346,7 @@ def render_fees_page(store, categories, invalidate_cb, today_date, default_tab=N
             use_container_width=True,
         ):
             st.session_state["show_new_mem_form"] = not show_new_mem
-            st.rerun(scope="fragment")
+            _rerun_fragment()
 
         if st.session_state.get("show_new_mem_form", False):
             with st.form("fees_new_members", clear_on_submit=True):
@@ -1351,7 +1360,7 @@ def render_fees_page(store, categories, invalidate_cb, today_date, default_tab=N
                     if n:
                         st.session_state["show_new_mem_form"] = False
                         st.toast(f"✅ {n} sporcu eklendi.")
-                        st.rerun(scope="fragment")
+                        _rerun_fragment()
                     else:
                         st.info("Yeni isim bulunamadı (zaten kayıtlı olabilir).")
 
@@ -1382,6 +1391,6 @@ def render_fees_page(store, categories, invalidate_cb, today_date, default_tab=N
                     if tx_ch:
                         invalidate_cb()
                     st.toast("🗑️ Seçilen sporcular silindi.")
-                    st.rerun(scope="fragment")
+                    _rerun_fragment()
         else:
             st.info("Henüz sporcu yok. Sağ üstteki **➕ Sporcu Ekle** butonuna basarak ekleyebilirsiniz.")

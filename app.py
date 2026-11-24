@@ -13,7 +13,7 @@ from utils import (
     render_member_ledger,
     get_known_members,
 )
-from utils.fees import FeeStore, render_fees_page, get_pending_fees_total
+from utils.fees import FeeStore, render_fees_page
 
 # Database configuration
 DB_PATH = 'ekonomi.db'
@@ -2239,7 +2239,7 @@ if menu_selection == "🏠 Özet":
     try:
         _ok_fees, _ = _fee_store_dash.ensure()
         if _ok_fees:
-            pending_fees_total = get_pending_fees_total(_fee_store_dash)
+            pending_fees_total = _fee_store_dash.get_pending_fees_total() if hasattr(_fee_store_dash, "get_pending_fees_total") else 0.0
     except Exception:
         pending_fees_total = 0.0
 
